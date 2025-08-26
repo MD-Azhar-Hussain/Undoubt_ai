@@ -92,6 +92,8 @@ const allowedOrigins = [
   "https://expresso-frontend.onrender.com",
   "http://localhost:5173", // dev local
   "http://192.168.1.100:5173", // dev local LAN
+  'https://undoubt.vercel.com',
+  'http://localhost:3000'
 ];
 
 // ✅ Express CORS middleware
