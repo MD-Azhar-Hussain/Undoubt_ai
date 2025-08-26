@@ -1,0 +1,44 @@
+### Create a Room
+POST http://localhost:3000/api/rooms HTTP/1.1
+Content-Type: application/json
+
+{}
+
+### Close a Room
+PUT http://localhost:3000/api/rooms/12345/close HTTP/1.1
+Content-Type: application/json
+
+{}
+
+### Submit a Doubt
+POST http://localhost:3000/api/doubts HTTP/1.1
+Content-Type: application/json
+
+{
+  "text": "How does this work?",
+  "roomId": "12345",
+  "userId": "user1"
+}
+
+### Upvote a Doubt
+PUT http://localhost:3000/api/doubts/67890/upvote HTTP/1.1
+Content-Type: application/json
+
+{}
+
+### Get Doubts for a Room
+GET http://localhost:3000/api/rooms/12345/doubts HTTP/1.1
+Content-Type: application/json
+
+### Create a User (Optional)
+POST http://localhost:3000/api/users HTTP/1.1
+Content-Type: application/json
+
+{
+  "name": "John Doe",
+  "email": "john.doe@example.com"
+}
+
+### Get User Details (Optional)
+GET http://localhost:3000/api/users/user1 HTTP/1.1
+Content-Type: application/json
