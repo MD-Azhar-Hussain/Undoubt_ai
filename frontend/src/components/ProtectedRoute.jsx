@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Navigate, useParams } from 'react-router-dom';
+import { Navigate, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'react-toastify';
@@ -8,6 +8,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 const ProtectedRoute = ({ children }) => {
   const { user, loading, isAuthenticated } = useAuth();
+  const location = useLocation();
 
   // Show loading spinner while checking authentication
   if (loading) {
@@ -23,7 +24,7 @@ const ProtectedRoute = ({ children }) => {
 
   // Redirect to login if not authenticated
   if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
 
   // Render the protected component if authenticated
@@ -34,6 +35,7 @@ const ProtectedRoute = ({ children }) => {
 const HostProtectedRoute = ({ children }) => {
   const { user, loading, isAuthenticated } = useAuth();
   const { roomId } = useParams();
+  const location = useLocation();
   const [isHost, setIsHost] = useState(null);
   const [checkingHost, setCheckingHost] = useState(true);
 
@@ -91,7 +93,7 @@ const HostProtectedRoute = ({ children }) => {
 
   // Redirect to login if not authenticated
   if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
 
   // If not the host, redirect to participant page for the same room

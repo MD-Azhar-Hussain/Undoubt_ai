@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://undoubtai-production.up.railway.app/api';
 
 export const createRoom = async () => {
   const response = await axios.post(`${API_BASE_URL}/rooms`);

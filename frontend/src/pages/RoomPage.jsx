@@ -11,7 +11,21 @@ import stringSimilarity from 'string-similarity';
 import { createRoom, submitDoubt, getDoubts, getRoom } from '../utils/api';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
-const FRONTEND_URL = import.meta.env.VITE_FRONTEND_URL;
+const DEFAULT_FRONTEND_ORIGIN = 'https://undoubt-ai.vercel.app';
+const RAW_FRONTEND_URL = import.meta.env.VITE_FRONTEND_URL || (typeof window !== 'undefined' ? window.location.origin : DEFAULT_FRONTEND_ORIGIN);
+const FRONTEND_URL = (() => {
+  try {
+    const parsed = new URL(RAW_FRONTEND_URL);
+    const isLocalhost = ['localhost', '127.0.0.1'].includes(parsed.hostname);
+    if (isLocalhost) return parsed.origin;
+    if (parsed.hostname.endsWith('vercel.app') && parsed.hostname !== 'undoubt-ai.vercel.app') {
+      return DEFAULT_FRONTEND_ORIGIN;
+    }
+    return parsed.origin;
+  } catch (_) {
+    return DEFAULT_FRONTEND_ORIGIN;
+  }
+})();
 
 const RoomPage = ({ role }) => {
   const { roomId } = useParams();

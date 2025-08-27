@@ -84,17 +84,11 @@ require("dotenv").config();
 const app = express();
 const server = http.createServer(app);
 
-// ✅ Single list of allowed origins (update this list as needed)
+// ✅ Single list of allowed origins (production + local dev)
 const allowedOrigins = [
-  "https://undoubt-vercel-1giwzjnwl-md-azhar-hussains-projects.vercel.app",
-  "https://expresso-app.vercel.app",
-  "https://undoubt.onrender.com",
-  "https://expresso-frontend.onrender.com",
-  "http://localhost:5173", // dev local
-  "http://192.168.1.100:5173", // dev local LAN
   "https://undoubt-ai.vercel.app",
-  "https://undoubt-ai.vercel.com",
-  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
 ];
 
 // ✅ Express CORS middleware

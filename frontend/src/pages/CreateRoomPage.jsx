@@ -8,7 +8,21 @@ import 'react-toastify/dist/ReactToastify.css';
 import { useAuth } from '../contexts/AuthContext';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
-const FRONTEND_URL = import.meta.env.VITE_FRONTEND_URL;
+const DEFAULT_FRONTEND_ORIGIN = 'https://undoubt-ai.vercel.app';
+const RAW_FRONTEND_URL = import.meta.env.VITE_FRONTEND_URL || (typeof window !== 'undefined' ? window.location.origin : DEFAULT_FRONTEND_ORIGIN);
+const FRONTEND_URL = (() => {
+  try {
+    const parsed = new URL(RAW_FRONTEND_URL);
+    const isLocalhost = ['localhost', '127.0.0.1'].includes(parsed.hostname);
+    if (isLocalhost) return parsed.origin;
+    if (parsed.hostname.endsWith('vercel.app') && parsed.hostname !== 'undoubt-ai.vercel.app') {
+      return DEFAULT_FRONTEND_ORIGIN;
+    }
+    return parsed.origin;
+  } catch (_) {
+    return DEFAULT_FRONTEND_ORIGIN;
+  }
+})();
 
 const CreateRoomPage = () => {
   const [roomId, setRoomId] = useState('');
@@ -134,7 +148,7 @@ const CreateRoomPage = () => {
               <FaShareAlt className="text-3xl text-blue-400 mb-2 animate-bounce" />
               <h2 className="text-2xl font-bold mb-2">Share Your Room</h2>
               <div className="mb-4 p-4 bg-white rounded-lg animate-fade-in">
-                <QRCode value={roomId} size={180} />
+                <QRCode value={`${FRONTEND_URL}/room/${roomId}`} size={180} />
               </div>
               <p className="text-base sm:text-lg md:text-xl mb-2 text-center">Room ID: <span className="font-mono text-orange-400">{roomId}</span></p>
               <button
@@ -180,7 +194,7 @@ const CreateRoomPage = () => {
             <div className="w-full h-full grid grid-cols-2 xl:grid-cols-3 gap-10 items-center">
               <div className="flex flex-col items-center justify-center">
                 <div className="mb-6 p-6 bg-white rounded-xl">
-                  <QRCode value={roomId} size={320} />
+                  <QRCode value={`${FRONTEND_URL}/room/${roomId}`} size={320} />
                 </div>
                 <p className="text-xl mb-3 text-center">Room ID: <span className="font-mono text-orange-400 text-3xl">{roomId}</span></p>
                 <button
@@ -230,7 +244,7 @@ const CreateRoomPage = () => {
       {!showShare && roomId && (
         <div className="mt-6 sm:mt-10 flex flex-col items-center animate-fade-in">
           <div className="mb-4 sm:mb-5 p-4 bg-white rounded-lg">
-            <QRCode value={roomId} size={window.innerWidth < 640 ? 150 : 200} />
+            <QRCode value={`${FRONTEND_URL}/room/${roomId}`} size={window.innerWidth < 640 ? 150 : 200} />
           </div>
           <p className="text-base sm:text-lg md:text-xl mb-3 text-center">Room ID: <span className="font-mono text-orange-400">{roomId}</span></p>
           <button

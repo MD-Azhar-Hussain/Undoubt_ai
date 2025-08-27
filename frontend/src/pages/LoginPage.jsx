@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { signInWithGoogle, getGoogleRedirectResult, logOut } from '../config/firebase';
 import { isEmailAllowed } from '../utils/emailValidation';
 import { ToastContainer, toast } from 'react-toastify';
@@ -9,6 +9,8 @@ import { FaGoogle } from 'react-icons/fa';
 const LoginPage = () => {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
+  const redirectTo = (location.state && location.state.from) || '/';
 
   // Check for redirect result on component mount
   useEffect(() => {
@@ -28,7 +30,7 @@ const LoginPage = () => {
           }
           
           toast.success('Successfully signed in with Google!');
-          navigate('/');
+          navigate(redirectTo, { replace: true });
         }
       } catch (error) {
         console.error('Redirect result error:', error);
@@ -55,7 +57,7 @@ const LoginPage = () => {
       }
       
       toast.success('Successfully signed in with Google!');
-      navigate('/');
+      navigate(redirectTo, { replace: true });
     } catch (error) {
       console.error('Google sign-in error:', error);
       toast.error('Failed to sign in with Google. Please try again.');
