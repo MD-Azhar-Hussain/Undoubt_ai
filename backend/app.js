@@ -87,7 +87,7 @@ const server = http.createServer(app);
 // ✅ Single list of allowed origins (production + local dev)
 const allowedOrigins = [
   "https://undoubt-ai.vercel.app",
-  "http://localhost:5173/",
+  "http://localhost:5173",
   "http://127.0.0.1:5173",
 ];
 
@@ -95,23 +95,59 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+      
+      // Check if origin is in allowed list
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
       }
+      
+      // Allow localhost on any port for development
+      if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+        return callback(null, true);
+      }
+      
+      // Allow Vercel preview deployments
+      if (origin.includes('vercel.app')) {
+        return callback(null, true);
+      }
+      
+      callback(new Error("Not allowed by CORS"));
     },
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
+    optionsSuccessStatus: 200,
   })
 );
 
 // ✅ Socket.IO shares same CORS config
 const io = socketIo(server, {
   cors: {
-    origin: allowedOrigins,
-    methods: ["GET", "POST"],
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+      
+      // Check if origin is in allowed list
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      
+      // Allow localhost on any port for development
+      if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+        return callback(null, true);
+      }
+      
+      // Allow Vercel preview deployments
+      if (origin.includes('vercel.app')) {
+        return callback(null, true);
+      }
+      
+      callback(new Error("Not allowed by CORS"));
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
+    optionsSuccessStatus: 200,
   },
 });
 

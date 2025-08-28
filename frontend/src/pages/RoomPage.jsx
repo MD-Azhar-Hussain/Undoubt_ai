@@ -488,6 +488,14 @@ const RoomPage = ({ role }) => {
   );
   };
 
+  const similarDoubt = doubts.find(
+    (doubt) =>
+      doubt &&
+      doubt.text &&
+      typeof doubt.text === 'string' &&
+      stringSimilarity.compareTwoStrings(newDoubt, doubt.text) > 0.7
+  );
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 via-purple-800 to-black text-white">
       {/* Header Section */}
@@ -524,18 +532,18 @@ const RoomPage = ({ role }) => {
                 <FaCopy />
               </button>
             </div>
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center gap-2 flex-wrap justify-end">
               {role !== 'participant' && (
                 <>
                   <button
                     onClick={toggleQRCode}
-                    className="px-3 py-1.5 text-xs sm:text-sm bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+                    className="px-3 py-1.5 text-xs sm:text-sm bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shrink-0"
                   >
                     {showQRCode ? 'Hide QR' : 'Show QR'}
                   </button>
                   <button
                     onClick={handleCloseRoom}
-                    className="px-3 py-1.5 text-xs sm:text-sm bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+                    className="px-3 py-1.5 text-xs sm:text-sm bg-red-600 hover:bg-red-700 rounded-lg transition-colors shrink-0"
                   >
                     Close Room
                   </button>
@@ -544,7 +552,7 @@ const RoomPage = ({ role }) => {
               {role !== 'host' && (
                 <button
                   onClick={handleLeaveRoom}
-                  className="px-3 py-1.5 text-xs sm:text-sm bg-orange-600 hover:bg-orange-700 rounded-lg transition-colors text-white"
+                  className="px-3 py-1.5 text-xs sm:text-sm bg-orange-600 hover:bg-orange-700 rounded-lg transition-colors text-white shrink-0"
                 >
                   Leave
                 </button>
@@ -646,6 +654,18 @@ const RoomPage = ({ role }) => {
                   {similarity > 70 && (
                     <span className="text-red-300 text-xs">(Consider checking existing doubts)</span>
                   )}
+                </div>
+              )}
+              {similarDoubt && (
+                <div className="p-3 bg-red-900/20 border border-red-500/30 rounded-lg">
+                  <div className="flex items-start gap-2">
+                    <span className="text-red-300 text-sm">⚠️</span>
+                    <div className="flex-1">
+                      <p className="text-red-200 text-sm font-medium">Similar doubt already exists:</p>
+                      <p className="text-red-100 text-sm mt-1 italic">"{similarDoubt.text}"</p>
+                      <p className="text-red-300 text-xs mt-1">Upvotes: {similarDoubt.upvotes}</p>
+                    </div>
+                  </div>
                 </div>
               )}
               <button
