@@ -87,7 +87,7 @@ const server = http.createServer(app);
 // ✅ Single list of allowed origins (production + local dev)
 const allowedOrigins = [
   "https://undoubt-ai.vercel.app",
-  "http://localhost:5173",
+  "http://localhost:5173/",
   "http://127.0.0.1:5173",
 ];
 

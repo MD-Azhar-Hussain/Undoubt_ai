@@ -3,7 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import socket from '../utils/socket';
 import QRCode from 'react-qr-code';
-import { FaCopy, FaEye, FaEyeSlash, FaCheck, FaThumbsUp, FaQuestionCircle, FaCheckCircle, FaArrowUp, FaArrowDown, FaTimes } from 'react-icons/fa';
+import { FaCopy, FaEye, FaEyeSlash, FaQuestionCircle, FaCheckCircle, FaArrowRight, FaArrowUp, FaArrowDown, FaTimes } from 'react-icons/fa';
+import { AiFillStar, AiOutlineStar } from 'react-icons/ai';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import axios from 'axios';
@@ -41,9 +42,12 @@ const RoomPage = ({ role }) => {
   const [roomClosureMessage, setRoomClosureMessage] = useState('');
   const [activeTab, setActiveTab] = useState('active'); // 'active' or 'answered'
   const [showQRCode, setShowQRCode] = useState(true);
+  const [recentlyAnswered, setRecentlyAnswered] = useState(new Set());
+  const [transitioningToAnswered, setTransitioningToAnswered] = useState(new Set());
   const [isQrFullscreen, setIsQrFullscreen] = useState(false);
   const [qrFullscreenSize, setQrFullscreenSize] = useState(400);
   const [roomName, setRoomName] = useState('');
+  const [animateStagger, setAnimateStagger] = useState(true);
 
   useEffect(() => {
     socket.emit('joinRoom', roomId, role, user.id);
@@ -62,6 +66,11 @@ const RoomPage = ({ role }) => {
           try { localStorage.setItem(`roomName:${roomId}`, nm); } catch (e) {}
         }
       }
+    });
+    socket.on('roomTopicUpdated', ({ topic }) => {
+      const nm = (topic || '').trim();
+      setRoomName(nm);
+      try { localStorage.setItem(`roomName:${roomId}`, nm); } catch (e) {}
     });
 
     socket.on('newDoubt', (doubt) => {
@@ -96,11 +105,43 @@ const RoomPage = ({ role }) => {
     });
 
     socket.on('markAsAnswered', (doubtId, answered) => {
-      setDoubts((prevDoubts) =>
-        prevDoubts.map((doubt) =>
-          doubt.id === doubtId ? { ...doubt, answered } : doubt
-        )
-      );
+      if (answered) {
+        // Stage slide-out in Active for all clients
+        setTransitioningToAnswered((prev) => new Set(prev).add(doubtId));
+        setTimeout(() => {
+          setDoubts((prevDoubts) =>
+            prevDoubts.map((doubt) =>
+              doubt.id === doubtId ? { ...doubt, answered: true } : doubt
+            )
+          );
+          setRecentlyAnswered((prev) => {
+            const next = new Set(prev);
+            next.add(doubtId);
+            return next;
+          });
+          setTimeout(() => {
+            setRecentlyAnswered((prev) => {
+              const next = new Set(prev);
+              next.delete(doubtId);
+              return next;
+            });
+          }, 600);
+          // Clean up exiting flag once moved
+          setTimeout(() => {
+            setTransitioningToAnswered((prev) => {
+              const next = new Set(prev);
+              next.delete(doubtId);
+              return next;
+            });
+          }, 120);
+        }, 150);
+      } else {
+        setDoubts((prevDoubts) =>
+          prevDoubts.map((doubt) =>
+            doubt.id === doubtId ? { ...doubt, answered } : doubt
+          )
+        );
+      }
       toast.success('Doubt marked as answered!', {
         position: "top-right",
         autoClose: 3000,
@@ -122,6 +163,7 @@ const RoomPage = ({ role }) => {
       socket.off('downvoteDoubt');
       socket.off('markAsAnswered');
       socket.off('roomClosed');
+      socket.off('roomTopicUpdated');
     };
   }, [roomId, role, user.id, navigate]);
 
@@ -154,6 +196,13 @@ const RoomPage = ({ role }) => {
       }
     })();
   }, [roomId]);
+
+  // Run stagger animation only on initial mount and when tab changes
+  useEffect(() => {
+    setAnimateStagger(true);
+    const timer = setTimeout(() => setAnimateStagger(false), 700);
+    return () => clearTimeout(timer);
+  }, [activeTab]);
 
   const handleAddDoubt = () => {
     if (newDoubt.trim() === '') {
@@ -211,7 +260,20 @@ const RoomPage = ({ role }) => {
   };
 
   const handleMarkAsAnswered = (id) => {
-    socket.emit('markAsAnswered', roomId, id);
+    // Phase 1: animate out from Active tab before server update
+    setTransitioningToAnswered((prev) => new Set(prev).add(id));
+    setTimeout(() => {
+      socket.emit('markAsAnswered', roomId, id);
+      // Phase 2: after answered event arrives, item will move to Answered and play slide-in
+      // Clean up the transitioning flag slightly after to allow removal from Active
+      setTimeout(() => {
+        setTransitioningToAnswered((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }, 100);
+    }, 250);
   };
 
   const handleCopyRoomId = () => {
@@ -318,7 +380,7 @@ const RoomPage = ({ role }) => {
   };
 
   // Separate active and answered doubts
-  const activeDoubts = doubts.filter(doubt => !doubt.answered);
+  const activeDoubts = doubts.filter(doubt => !doubt.answered || transitioningToAnswered.has(doubt.id));
   const answeredDoubts = doubts.filter(doubt => doubt.answered);
 
   // Sort doubts by upvotes and then by creation time
@@ -336,13 +398,23 @@ const RoomPage = ({ role }) => {
     return b.upvotes - a.upvotes;
   });
 
-  const DoubtCard = ({ doubt, isAnswered = false }) => (
+  const DoubtCard = ({ doubt, isAnswered = false, isExiting = false }) => {
+    const isUpvoted = upvotedDoubts.has(doubt.id);
+    const badgeColorClasses = isAnswered
+      ? 'text-emerald-200 border-emerald-400/40 bg-emerald-900/20'
+      : isUpvoted
+        ? 'text-yellow-200 border-yellow-400/40 bg-yellow-900/20'
+        : 'text-blue-200 border-blue-400/40 bg-blue-900/20';
+
+    const dotColorClass = isAnswered ? 'bg-emerald-300' : (isUpvoted ? 'bg-yellow-300' : 'bg-blue-300');
+
+    return (
     <div
       className={`relative p-4 mb-4 rounded-xl shadow-lg transition-all duration-300 hover:shadow-xl transform hover:scale-[1.01] ${
         isAnswered 
           ? 'bg-emerald-900/30 border border-emerald-400/30' 
           : 'bg-gray-900/50 border border-blue-500/30'
-      }`}
+      } ${isAnswered && recentlyAnswered.has(doubt.id) ? 'doubt-slide-in answered-sweep' : ''} ${!isAnswered && isExiting ? 'doubt-slide-out-left' : ''}`}
     >
       <div className="flex items-start justify-between">
         <div className="flex-1 mr-3">
@@ -351,7 +423,8 @@ const RoomPage = ({ role }) => {
           </p>
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
-              <span className={`text-sm font-semibold ${isAnswered ? 'text-emerald-300' : 'text-blue-300'}`}>
+              <span className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-semibold border ${badgeColorClasses} ${isUpvoted && !isAnswered ? 'ring-1 ring-yellow-400/30 scale-[1.02]' : ''} transition-transform`}> 
+                <span className={`w-1.5 h-1.5 rounded-full mr-2 ${dotColorClass}`}></span>
                 {doubt.upvotes} upvotes
               </span>
               {isAnswered && (
@@ -361,49 +434,59 @@ const RoomPage = ({ role }) => {
                 </span>
               )}
             </div>
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center gap-3 flex-wrap justify-end">
               {role === 'host' && (
                 <>
                   <button
                     onClick={() => handleToggleEmailVisibility(doubt.id)}
-                    className="p-2 text-gray-300 hover:text-white transition-colors"
+                    className="px-3 py-2 text-gray-200 hover:text-white bg-gray-700/30 hover:bg-gray-700/50 border border-gray-500/30 rounded-lg transition-colors shrink-0 flex items-center gap-2"
                     title={visibleEmails.has(doubt.id) ? 'Hide email' : 'Show email'}
                   >
                     {visibleEmails.has(doubt.id) ? <FaEyeSlash /> : <FaEye />}
+                    <span className="hidden sm:inline text-sm">Email</span>
                   </button>
                   {visibleEmails.has(doubt.id) && (
-                    <span className="text-xs text-gray-200 bg-gray-800 px-2 py-1 rounded border border-gray-700">
+                    <span className="text-xs text-gray-200 bg-gray-800 px-2 py-1 rounded border border-gray-700 max-w-[60vw] sm:max-w-xs overflow-hidden text-ellipsis whitespace-nowrap">
                       {doubt.user}
                     </span>
                   )}
+                  <span className="hidden sm:block w-px h-6 bg-white/10" />
                   {!isAnswered && (
                     <button
                       onClick={() => handleMarkAsAnswered(doubt.id)}
-                      className="p-2 text-emerald-300 hover:text-emerald-200 transition-colors"
+                      className="px-3 py-2 text-emerald-100 bg-emerald-700/30 hover:bg-emerald-600/40 border border-emerald-400/40 rounded-lg transition-colors flex items-center gap-2 shrink-0"
                       title="Mark as answered"
                     >
-                      <FaCheck />
+                      <FaArrowRight className="text-2xl" />
+                      <span className="hidden sm:inline text-sm font-semibold">Mark answered</span>
                     </button>
                   )}
                 </>
               )}
-              <button
-                onClick={() => handleToggleUpvote(doubt.id)}
-                className={`p-2 rounded-full transition-all duration-200 ${
-                  upvotedDoubts.has(doubt.id) 
-                    ? 'text-blue-300 bg-blue-900/40' 
-                    : 'text-gray-400 hover:text-blue-300 hover:bg-blue-900/30'
-                }`}
-                title={upvotedDoubts.has(doubt.id) ? 'Remove upvote' : 'Upvote'}
-              >
-                <FaThumbsUp />
-              </button>
+              {role !== 'host' && (
+                <button
+                  onClick={() => handleToggleUpvote(doubt.id)}
+                  className={`p-2 rounded-full transition-all duration-200 ${
+                    upvotedDoubts.has(doubt.id) 
+                      ? 'text-yellow-300 bg-yellow-900/20 ring-1 ring-yellow-400/30' 
+                      : 'text-gray-400 hover:text-yellow-300 hover:bg-yellow-900/10'
+                  }`}
+                  title={upvotedDoubts.has(doubt.id) ? 'Remove upvote' : 'Upvote'}
+                >
+                  {upvotedDoubts.has(doubt.id) ? (
+                    <AiFillStar className="text-xl" />
+                  ) : (
+                    <AiOutlineStar className="text-xl" />
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </div>
       </div>
     </div>
   );
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 via-purple-800 to-black text-white">
@@ -414,9 +497,22 @@ const RoomPage = ({ role }) => {
             <div className="flex items-center space-x-3">
               <div className="flex flex-col">
                 {roomName && (
-                  <h1 className="text-xl sm:text-2xl md:text-3xl font-bold">
-                    {roomName}
-                  </h1>
+                  <div className="flex items-center gap-2">
+                    {role === 'host' ? (
+                      <input
+                        value={roomName}
+                        onChange={(e) => setRoomName(e.target.value)}
+                        onBlur={() => socket.emit('updateRoomTopic', roomId, roomName)}
+                        placeholder="Room topic"
+                        className="text-xl sm:text-2xl md:text-3xl font-bold bg-transparent border-b border-white/20 focus:border-white/40 focus:outline-none px-1"
+                      />
+                    ) : (
+                      <h1 className="text-xl sm:text-2xl md:text-3xl font-bold">{roomName}</h1>
+                    )}
+                    <span className={`text-[10px] sm:text-xs px-2 py-1 rounded-full border ${role==='host' ? 'bg-purple-700/30 text-purple-200 border-purple-400/30' : 'bg-blue-700/30 text-blue-200 border-blue-400/30'}`}>
+                      {role === 'host' ? 'HOST' : 'PARTICIPANT'}
+                    </span>
+                  </div>
                 )}
                 <span className="mt-0.5 inline-block text-xs sm:text-sm text-gray-300 bg-gray-800 px-2 py-0.5 rounded self-start">ID: {roomId}</span>
               </div>
@@ -448,7 +544,7 @@ const RoomPage = ({ role }) => {
               {role !== 'host' && (
                 <button
                   onClick={handleLeaveRoom}
-                  className="px-3 py-1.5 text-xs sm:text-sm bg-gray-600 hover:bg-gray-700 rounded-lg transition-colors"
+                  className="px-3 py-1.5 text-xs sm:text-sm bg-orange-600 hover:bg-orange-700 rounded-lg transition-colors text-white"
                 >
                   Leave
                 </button>
@@ -555,7 +651,7 @@ const RoomPage = ({ role }) => {
               <button
                 onClick={handleAddDoubt}
                 disabled={isRoomClosed || newDoubt.trim() === ''}
-                className="w-full sm:w-auto px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition-all duration-300 transform hover:scale-105 disabled:transform-none"
+                className="w-full sm:w-auto px-6 py-3 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition-all duration-300 transform hover:scale-105 disabled:transform-none"
               >
                 Submit Doubt
               </button>
@@ -590,7 +686,7 @@ const RoomPage = ({ role }) => {
         </div>
 
         {/* Doubts Container */}
-        <div className="space-y-6">
+        <div className="space-y-6 border border-white/10 rounded-xl p-4 bg-black/10">
           {activeTab === 'active' ? (
             <div>
               <h3 className="text-xl font-semibold mb-4 flex items-center">
@@ -606,9 +702,9 @@ const RoomPage = ({ role }) => {
                   )}
                 </div>
               ) : (
-                <div className="space-y-4">
+                <div className={`space-y-4 ${animateStagger ? 'stagger-in' : ''}`}> 
                   {sortedActiveDoubts.map((doubt) => (
-                    <DoubtCard key={doubt.id} doubt={doubt} />
+                    <DoubtCard key={doubt.id} doubt={doubt} isExiting={transitioningToAnswered.has(doubt.id)} />
                   ))}
                 </div>
               )}
@@ -625,7 +721,7 @@ const RoomPage = ({ role }) => {
                   <p className="text-xl text-gray-200">No answered doubts yet</p>
                 </div>
               ) : (
-                <div className="space-y-4">
+                <div className={`space-y-4 ${animateStagger ? 'stagger-in' : ''}`}> 
                   {sortedAnsweredDoubts.map((doubt) => (
                     <DoubtCard key={doubt.id} doubt={doubt} isAnswered={true} />
                   ))}

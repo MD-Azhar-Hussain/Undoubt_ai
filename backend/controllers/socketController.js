@@ -30,6 +30,21 @@ const handleSocketConnection = (io, socket) => {
     socket.emit('existingDoubts', existingDoubts);
   });
 
+  // Allow host to update room topic and broadcast
+  socket.on('updateRoomTopic', async (roomId, newTopic) => {
+    try {
+      const room = await Room.findOne({ roomId });
+      if (!room) return;
+      const isHost = socket.userId && room.hostId === socket.userId;
+      if (!isHost) return; // only host can update topic
+      room.topic = (typeof newTopic === 'string' ? newTopic.trim() : '');
+      await room.save();
+      io.to(roomId).emit('roomTopicUpdated', { roomId, topic: room.topic });
+    } catch (e) {
+      // ignore errors to avoid crashing
+    }
+  });
+
   socket.on('newDoubt', async (roomId, doubt) => {
     const newDoubt = new Doubt({ ...doubt, roomId, upvotes: 0, upvotedBy: [] });
     await newDoubt.save();
