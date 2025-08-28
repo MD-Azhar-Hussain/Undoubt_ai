@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import socket from '../utils/socket';
 import QRCode from 'react-qr-code';
-import { FaCopy, FaEye, FaEyeSlash, FaQuestionCircle, FaCheckCircle, FaArrowRight, FaArrowUp, FaArrowDown, FaTimes } from 'react-icons/fa';
+import { FaCopy, FaEye, FaEyeSlash, FaQuestionCircle, FaCheckCircle, FaArrowRight, FaArrowUp, FaArrowDown, FaTimes, FaEdit } from 'react-icons/fa';
 import { AiFillStar, AiOutlineStar } from 'react-icons/ai';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -146,13 +146,19 @@ const RoomPage = ({ role }) => {
         position: "top-right",
         autoClose: 3000,
         theme: "colored",
+        priority: 1,
       });
     });
 
     socket.on('roomClosed', () => {
       setIsRoomClosed(true);
       setRoomClosureMessage('The room was closed, kindly leave the room');
-      toast.error('Room was closed, kindly leave the room');
+      toast.error('Room was closed, kindly leave the room', {
+        position: "top-right",
+        autoClose: 5000,
+        theme: "colored",
+        priority: 10,
+      });
     });
 
     return () => {
@@ -206,7 +212,12 @@ const RoomPage = ({ role }) => {
 
   const handleAddDoubt = () => {
     if (newDoubt.trim() === '') {
-      toast.error('Doubt cannot be empty');
+      toast.error('Doubt cannot be empty', {
+        position: "top-right",
+        autoClose: 3000,
+        theme: "colored",
+        priority: 5,
+      });
       return;
     }
 
@@ -221,11 +232,12 @@ const RoomPage = ({ role }) => {
     socket.emit('newDoubt', roomId, doubt);
     setNewDoubt('');
     setSimilarity(0);
-    toast.success('Doubt submitted successfully!', {
-      position: "top-right",
-      autoClose: 3000,
-      theme: "colored",
-    });
+          toast.success('Doubt submitted successfully!', {
+        position: "top-right",
+        autoClose: 3000,
+        theme: "colored",
+        priority: 1,
+      });
   };
 
   const handleToggleUpvote = (id) => {
@@ -279,9 +291,19 @@ const RoomPage = ({ role }) => {
   const handleCopyRoomId = () => {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(roomId).then(() => {
-        toast.success('Room ID copied to clipboard!');
+        toast.success('Room ID copied to clipboard!', {
+          position: "top-right",
+          autoClose: 2000,
+          theme: "colored",
+          priority: 1,
+        });
       }).catch((err) => {
-        toast.error('Failed to copy Room ID');
+        toast.error('Failed to copy Room ID', {
+          position: "top-right",
+          autoClose: 3000,
+          theme: "colored",
+          priority: 5,
+        });
         console.error('Failed to copy Room ID:', err);
       });
     } else {
@@ -291,9 +313,19 @@ const RoomPage = ({ role }) => {
       textArea.select();
       try {
         document.execCommand('copy');
-        toast.success('Room ID copied to clipboard!');
+        toast.success('Room ID copied to clipboard!', {
+          position: "top-right",
+          autoClose: 2000,
+          theme: "colored",
+          priority: 1,
+        });
       } catch (err) {
-        toast.error('Failed to copy Room ID');
+        toast.error('Failed to copy Room ID', {
+          position: "top-right",
+          autoClose: 3000,
+          theme: "colored",
+          priority: 5,
+        });
         console.error('Failed to copy Room ID:', err);
       }
       document.body.removeChild(textArea);
@@ -522,15 +554,17 @@ const RoomPage = ({ role }) => {
                     </span>
                   </div>
                 )}
-                <span className="mt-0.5 inline-block text-xs sm:text-sm text-gray-300 bg-gray-800 px-2 py-0.5 rounded self-start">ID: {roomId}</span>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="inline-block text-xs sm:text-sm text-gray-300 bg-gray-800 px-2 py-0.5 rounded">ID: {roomId}</span>
+                  <button
+                    onClick={handleCopyRoomId}
+                    className="p-1.5 text-gray-300 hover:text-white transition-colors hover:bg-gray-700/30 rounded"
+                    title="Copy Room ID"
+                  >
+                    <FaCopy className="text-sm" />
+                  </button>
+                </div>
               </div>
-              <button
-                onClick={handleCopyRoomId}
-                className="p-2 text-gray-300 hover:text-white transition-colors"
-                title="Copy Room ID"
-              >
-                <FaCopy />
-              </button>
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
               {role !== 'participant' && (
@@ -752,7 +786,35 @@ const RoomPage = ({ role }) => {
         </div>
       </div>
 
-      <ToastContainer />
+      <ToastContainer 
+        limit={2}
+        position="top-right"
+        autoClose={3000}
+        hideProgressBar={false}
+        newestOnTop={false}
+        closeOnClick={true}
+        rtl={false}
+        pauseOnFocusLoss={true}
+        draggable={true}
+        pauseOnHover={true}
+        theme="colored"
+        toastClassName="text-sm"
+        bodyClassName="text-sm font-medium"
+        progressClassName="bg-white/20"
+        style={{
+          fontSize: '14px',
+          maxWidth: '300px',
+          minWidth: '260px'
+        }}
+        toastStyle={{
+          marginBottom: '8px',
+          borderRadius: '8px',
+          padding: '8px 12px'
+        }}
+        enableMultiContainer={false}
+        closeButton={false}
+        icon={false}
+      />
     </div>
   );
 };
