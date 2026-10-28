@@ -14,7 +14,7 @@ const socket = {
   emit(event, ...args) {
     const ack = typeof args.at(-1) === 'function' ? args.pop() : () => {};
     if (event === 'joinRoom') {
-      handlers.get('roomInfo')?.({ topic: 'Understanding motion', status: 'active' });
+      handlers.get('roomInfo')?.({ topic: 'Understanding motion', status: 'active', canManage: new URLSearchParams(window.location.search).get('role') === 'host' });
       handlers.get('existingDoubts')?.(questions, null);
     }
     ack(null, { ok: true });

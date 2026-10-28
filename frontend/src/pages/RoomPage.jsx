@@ -1,6 +1,6 @@
 import PropTypes from 'prop-types';
 import { useState, useEffect, useRef, useMemo, useDeferredValue } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import socket from '../utils/socket';
 import QRCode from 'react-qr-code';
@@ -18,14 +18,19 @@ import useQuestionDraft from '../hooks/useQuestionDraft';
 import { copyText } from '../utils/roomLinks';
 
 
-const RoomPage = ({ role }) => {
+const RoomPage = () => {
   const { roomId } = useParams();
   const { user } = useAuth();
-  return <RoomSession key={`${user.id}:${roomId}`} role={role} roomId={roomId} user={user} />;
+  if (!/^[a-zA-Z0-9-]{5,64}$/.test(roomId || '')) return <Navigate to="/access-denied" replace />;
+  return <RoomSession key={`${user.id}:${roomId}`} roomId={roomId} user={user} />;
 };
 
-const RoomSession = ({ role, roomId, user }) => {
+const RoomSession = ({ roomId, user }) => {
   const navigate = useNavigate();
+  // The authenticated socket join supplies permissions and data together.
+  // Neither the URL nor a caller-provided role grants host controls.
+  const [canManage, setCanManage] = useState(false);
+  const role = canManage ? 'host' : 'participant';
   const draft = useQuestionDraft(user.id, roomId);
   const newDoubt = draft.text;
   const setNewDoubt = draft.setText;
@@ -85,12 +90,19 @@ const RoomSession = ({ role, roomId, user }) => {
       pendingSnapshotUpdates = [];
       questionsDuringJoin = new Set();
       setConnected(false);
+      setCanManage(false);
       setConnectionState('connecting');
       socket.timeout(10000).emit('joinRoom', roomId, (error, result) => {
         if (disposed) return;
         if (error) { setConnectionState('disconnected'); toast.error('Could not join the room. Please reconnect.'); return; }
         setConnected(!!result?.ok);
         setConnectionState(result?.ok ? 'connected' : 'disconnected');
+        if (!result?.ok && [401, 403, 404].includes(result?.status)) {
+          setDoubts([]);
+          setCanManage(false);
+          navigate(result.status === 401 ? '/login' : '/access-denied', { replace: true });
+          return;
+        }
         if (!result?.ok && [404, 410].includes(result?.status)) {
           setIsRoomClosed(true);
           setRoomClosureMessage(result.message);
@@ -99,7 +111,12 @@ const RoomSession = ({ role, roomId, user }) => {
     };
     const expired = () => { socket.disconnect(); socket.connect(); };
     socket.on('sessionExpired', expired);
-    const disconnected = () => { setConnected(false); setConnectionState('disconnected'); };
+    const disconnected = reason => {
+      setConnected(false);
+      setCanManage(false);
+      if (reason === 'io server disconnect') setDoubts([]);
+      setConnectionState('disconnected');
+    };
     const failure = error => toast.error(error.message, { toastId: `room-error-${error.message}` });
     const connectionFailure = error => { disconnected(); failure(error); };
     socket.on('connect', join);
@@ -124,6 +141,7 @@ const RoomSession = ({ role, roomId, user }) => {
     });
 
     socket.on('roomInfo', (info) => {
+      setCanManage(info?.canManage === true);
       setIsRoomClosed(info?.status === 'closed');
       setRoomClosureMessage(info?.status === 'closed' ? 'This session has ended. You can revisit questions and host replies here.' : '');
       if (info && typeof info.topic === 'string') {
@@ -244,7 +262,7 @@ const RoomSession = ({ role, roomId, user }) => {
       socket.off('roomClosed');
       socket.off('roomTopicUpdated');
     };
-  }, [roomId, role, user.id, navigate]);
+  }, [roomId, user.id, navigate]);
 
   useEffect(() => {
     // Sockets via 'existingDoubts' will naturally populate doubts upon joining.
@@ -786,5 +804,4 @@ const RoomSession = ({ role, roomId, user }) => {
 };
 
 export default RoomPage;
-RoomPage.propTypes = { role: PropTypes.string.isRequired };
-RoomSession.propTypes = { role: PropTypes.string.isRequired, roomId: PropTypes.string.isRequired, user: PropTypes.shape({ id: PropTypes.string.isRequired }).isRequired };
+RoomSession.propTypes = { roomId: PropTypes.string.isRequired, user: PropTypes.shape({ id: PropTypes.string.isRequired }).isRequired };

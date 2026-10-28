@@ -40,7 +40,7 @@ function AccessCheck({ kind, resource, children }) {
     // still hides children below; explicit denial still redirects immediately.
     setError('');
     const orgRoute = kind === 'organisation' && resource;
-    const isRoom = ['host', 'participant', 'report'].includes(kind);
+    const isRoom = kind === 'report';
     const valid = !resource || (isRoom ? /^[a-zA-Z0-9-]{5,64}$/ : /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i).test(resource);
     if (!valid) { setResult({ denied: true }); return () => controller.abort(); }
     const url = isRoom ? '/rooms/' + resource + '/host/' + encodeURIComponent(user.id) : orgRoute ? '/organisations/' + resource : '/me';
@@ -63,14 +63,10 @@ function AccessCheck({ kind, resource, children }) {
   if (!result) return <AccessState message="Verifying this page is available to your account." />;
   if (result.login) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   if (result.denied || (kind === 'report' && !result.isHost)) return <Navigate to="/access-denied" replace />;
-  if (kind === 'host' && !result.isHost) return <Navigate to={'/room/' + resource} replace />;
-  if (kind === 'participant' && result.isHost) return <Navigate to={'/host/' + resource} replace />;
   return children;
 }
 AccessCheck.propTypes = { kind: PropTypes.string, resource: PropTypes.string, children: PropTypes.node };
-export const HostProtectedRoute = ({ children }) => <ResourceGate kind="host">{children}</ResourceGate>;
-export const ParticipantProtectedRoute = ({ children }) => <ResourceGate kind="participant">{children}</ResourceGate>;
 export const ManagementProtectedRoute = ({ children, platform = false }) => <ResourceGate kind={platform ? 'platform' : 'organisation'}>{children}</ResourceGate>;
 export const ReportProtectedRoute = ({ children }) => <ResourceGate kind="report">{children}</ResourceGate>;
-HostProtectedRoute.propTypes = ParticipantProtectedRoute.propTypes = ReportProtectedRoute.propTypes = { children: PropTypes.node };
+ReportProtectedRoute.propTypes = { children: PropTypes.node };
 ManagementProtectedRoute.propTypes = { children: PropTypes.node, platform: PropTypes.bool };

@@ -3,7 +3,7 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { logOut } from './config/firebase';
-import ProtectedRoute, { HostProtectedRoute, ParticipantProtectedRoute, ManagementProtectedRoute, ReportProtectedRoute } from './components/ProtectedRoute';
+import ProtectedRoute, { ManagementProtectedRoute, ReportProtectedRoute } from './components/ProtectedRoute';
 import HomePage from './pages/HomePage';
 import CreateRoomPage from './pages/CreateRoomPage';
 import JoinRoomPage from './pages/JoinRoomPage';
@@ -157,13 +157,13 @@ const AppRoutes = ({ isAuthenticated }) => {
         <Route
           path="/room/:roomId"
           element={
-            <ParticipantProtectedRoute><RoomPage role="participant" /></ParticipantProtectedRoute>
+            <ProtectedRoute><RoomPage /></ProtectedRoute>
           }
         />
         <Route
           path="/host/:roomId"
           element={
-            <HostProtectedRoute><RoomPage role="host" /></HostProtectedRoute>
+            <ProtectedRoute><RoomPage /></ProtectedRoute>
           }
         />
       <Route path="*" element={<main className="access-screen"><div className="access-card"><h1>Page not found</h1><p>This page may have moved.</p><Link to="/">Back to my sessions</Link></div></main>} />

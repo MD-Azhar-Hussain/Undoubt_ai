@@ -20,10 +20,12 @@ vi.mock('../utils/socket', () => ({ default: socket }));
 vi.mock('../utils/http', () => ({ default: { get: vi.fn(), delete: vi.fn() } }));
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 'student', emailAddresses: [{ emailAddress: 'student@example.com' }] } }) }));
 import RoomPage from './RoomPage';
+import http from '../utils/http';
 import { toast } from 'react-toastify';
 
 function mount(role = 'participant') {
-  render(<MemoryRouter initialEntries={['/room/12345']}><Routes><Route path="/room/:roomId" element={<RoomPage role={role} />} /></Routes></MemoryRouter>);
+  render(<MemoryRouter initialEntries={['/room/12345']}><Routes><Route path="/room/:roomId" element={<RoomPage />} /><Route path="/access-denied" element={<p>Access denied</p>} /><Route path="/login" element={<p>Sign in again</p>} /></Routes></MemoryRouter>);
+  if (role === 'host') act(() => handlers.roomInfo({ canManage: true, topic: 'Physics', status: 'active' }));
 }
 function joined() {
   const call = socket.emit.mock.calls.find(call => call[0] === 'joinRoom');
@@ -37,6 +39,38 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 describe('room confirmation and recovery', () => {
+  it('uses the authenticated socket join without a second HTTP access request', () => {
+    mount();
+    expect(socket.emit.mock.calls.filter(call => call[0] === 'joinRoom')).toHaveLength(1);
+    expect(http.get).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Close Room' })).toBeNull();
+    act(() => handlers.roomInfo({ topic: 'Physics', status: 'active', canManage: true }));
+    joined();
+    expect(screen.getByRole('button', { name: 'Close Room' })).toBeTruthy();
+    expect(socket.emit.mock.calls.filter(call => call[0] === 'joinRoom')).toHaveLength(1);
+  });
+  it('does not grant host tools from the URL or a role prop', () => {
+    render(<MemoryRouter initialEntries={['/host/12345']}><Routes><Route path="/host/:roomId" element={<RoomPage role="host" />} /></Routes></MemoryRouter>);
+    joined();
+    act(() => handlers.roomInfo({ topic: 'Physics', status: 'active', canManage: false }));
+    expect(screen.queryByRole('button', { name: 'Close Room' })).toBeNull();
+    expect(screen.getByRole('textbox', { name: 'Your question' })).toBeTruthy();
+  });
+  it.each([401, 403, 404])('rejects a denied socket join (%s) without host controls', status => {
+    mount();
+    const join = socket.emit.mock.calls.find(call => call[0] === 'joinRoom');
+    act(() => join.at(-1)(null, { ok: false, status, message: 'Denied' }));
+    expect(screen.getByText(status === 401 ? 'Sign in again' : 'Access denied')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Close Room' })).toBeNull();
+  });
+  it('removes host controls and room data on a server-side access disconnect', () => {
+    mount('host'); joined();
+    act(() => handlers.existingDoubts([{ id: 'q', text: 'Private room question', upvotes: 0, upvotedBy: [] }], null));
+    expect(screen.getByRole('button', { name: 'Close Room' })).toBeTruthy();
+    act(() => handlers.disconnect('io server disconnect'));
+    expect(screen.queryByRole('button', { name: 'Close Room' })).toBeNull();
+    expect(screen.queryByText('Private room question')).toBeNull();
+  });
   it('does not erase a second draft when an earlier submission finishes', () => {
     mount(); joined();
     const input = screen.getByRole('textbox', { name: 'Your question' });
@@ -217,7 +251,7 @@ describe('closed-session follow-up', () => {
   const question = { id: 'q1', text: 'Explain inertia?', isOwn: true, upvotes: 2, upvotedBy: [], answered: false, revision: 0 };
   it('lets the host save a written reply after closure', async () => {
     mount('host'); joined();
-    act(() => { handlers.roomInfo({ topic: 'Physics', status: 'closed' }); handlers.existingDoubts([question], null); });
+    act(() => { handlers.roomInfo({ canManage: true, topic: 'Physics', status: 'closed' }); handlers.existingDoubts([question], null); });
     expect(screen.queryByRole('button', { name: 'Close Room' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Reply', exact: true }));
     fireEvent.change(screen.getByLabelText('Your reply'), { target: { value: 'Resistance to changes in motion.' } });

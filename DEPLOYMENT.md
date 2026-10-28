@@ -96,6 +96,8 @@ This release supports one backend process. Multiple replicas or PM2 cluster work
 
 ## 7. Diagnosing latency
 
+Live room pages now obtain permissions from the authenticated socket join along with room data. They no longer perform a separate HTTP host check before opening the socket. Host controls start hidden, appear only after the server confirms `canManage`, and disappear on disconnect. Admin/organisation/report pages retain their separate access gates. Both old `/host/:id` and `/room/:id` links remain supported; the URL does not grant a role.
+
 Keep the backend and database geographically close. The reported deployment uses Railway Singapore and Supabase Mumbai; every serial database round trip crosses regions. Vercel serves this application's static frontend; moving a Vercel function region does not shorten the browser's direct requests to Railway. Review both providers' available regions and migration/backup procedures before moving an existing database.
 
 Enable `PERFORMANCE_LOGS=true` on Railway for a short observation window. Compare `totalMs`, `dbMs`, `dbQueries`, `authMs`, and `poolMs` for a room join, question and vote. `dbMs` includes database network/lock time, and for non-transaction queries also pool waiting. It is not pure SQL execution time. Batched broadcast queries are attributed to the event that schedules the batch; other waiting votes include that wait in total time. HTTP finish times exclude browser/edge transit; comparing these with browser Network timings separates server work from network delay. Logs omit user IDs, room IDs, tokens and question contents. Firebase revocation checks remain enabled; concurrent checks of the identical token share work only until completion.

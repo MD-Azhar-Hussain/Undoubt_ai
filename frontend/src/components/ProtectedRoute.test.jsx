@@ -4,12 +4,12 @@ import { MemoryRouter, Route, Routes, Link } from 'react-router-dom';
 const { state, get } = vi.hoisted(() => ({ state: { user: { id: 'user' }, loading: false, isAuthenticated: true, acceptAccess: vi.fn() }, get: vi.fn() }));
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => state }));
 vi.mock('../utils/http', () => ({ default: { get } }));
-import { HostProtectedRoute, ManagementProtectedRoute } from './ProtectedRoute';
+import { ReportProtectedRoute, ManagementProtectedRoute } from './ProtectedRoute';
 function mount(path) {
-  return render(<MemoryRouter initialEntries={[path]}><Link to="/host/654321">Next room</Link><Routes>
+  return render(<MemoryRouter initialEntries={[path]}><Link to="/sessions/654321">Next room</Link><Routes>
     <Route path="/admin" element={<ManagementProtectedRoute platform><p>Private admin tools</p></ManagementProtectedRoute>} />
     <Route path="/organisation/:organisationId" element={<ManagementProtectedRoute><p>Private workspace</p></ManagementProtectedRoute>} />
-    <Route path="/host/:roomId" element={<HostProtectedRoute><p>Private host tools</p></HostProtectedRoute>} />
+    <Route path="/sessions/:roomId" element={<ReportProtectedRoute><p>Private report</p></ReportProtectedRoute>} />
     <Route path="/access-denied" element={<p>Denied</p>} /><Route path="/login" element={<p>Sign in</p>} />
   </Routes></MemoryRouter>);
 }
@@ -35,11 +35,11 @@ it('keeps tools hidden on network errors and permits retry', async () => {
 it('does not carry a previous room permission into the next room', async () => {
   let resolveNext;
   get.mockResolvedValueOnce({ data: { isHost: true } }).mockImplementationOnce(() => new Promise(resolve => { resolveNext = resolve; }));
-  mount('/host/123456'); await screen.findByText('Private host tools');
+  mount('/sessions/123456'); await screen.findByText('Private report');
   fireEvent.click(screen.getByRole('link', { name: 'Next room' }));
-  expect(screen.queryByText('Private host tools')).toBeNull();
+  expect(screen.queryByText('Private report')).toBeNull();
   await act(async () => resolveNext({ data: { isHost: true } }));
-  await screen.findByText('Private host tools');
+  await screen.findByText('Private report');
 });
 it('rechecks access when returning to the browser window', async () => {
   const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
@@ -50,35 +50,35 @@ it('rechecks access when returning to the browser window', async () => {
   await screen.findByText('Denied');
 });
 
-it('does not recheck or reset room state on rapid window switches', async () => {
+it('does not recheck or reset report state on rapid window switches', async () => {
   get.mockResolvedValue({ data: { isHost: true } });
-  mount('/host/123456'); await screen.findByText('Private host tools');
+  mount('/sessions/123456'); await screen.findByText('Private report');
   for (let i = 0; i < 10; i++) fireEvent(window, new Event('focus'));
   expect(get).toHaveBeenCalledTimes(1);
-  expect(screen.getByText('Private host tools')).toBeTruthy();
+  expect(screen.getByText('Private report')).toBeTruthy();
 });
 
-it('keeps the same room element mounted during successful background verification', async () => {
+it('keeps the same report element mounted during successful background verification', async () => {
   const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
   let finish;
   get.mockResolvedValueOnce({ data: { isHost: true } }).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-  mount('/host/123456'); const original = await screen.findByText('Private host tools');
+  mount('/sessions/123456'); const original = await screen.findByText('Private report');
   now.mockReturnValue(61001);
   fireEvent(window, new Event('focus'));
   fireEvent(document, new Event('visibilitychange'));
   expect(get).toHaveBeenCalledTimes(2);
-  expect(screen.getByText('Private host tools')).toBe(original);
+  expect(screen.getByText('Private report')).toBe(original);
   await act(async () => finish({ data: { isHost: true } }));
-  expect(screen.getByText('Private host tools')).toBe(original);
+  expect(screen.getByText('Private report')).toBe(original);
 });
 
-it('hides a previously approved room if revalidation fails, including during retry', async () => {
+it('hides a previously approved report if revalidation fails, including during retry', async () => {
   const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
   get.mockResolvedValueOnce({ data: { isHost: true } }).mockRejectedValueOnce(new Error('offline')).mockImplementationOnce(() => new Promise(() => {}));
-  mount('/host/123456'); await screen.findByText('Private host tools');
+  mount('/sessions/123456'); await screen.findByText('Private report');
   now.mockReturnValue(61001); fireEvent(window, new Event('focus'));
   const retry = await screen.findByRole('button', { name: 'Try again' });
-  expect(screen.queryByText('Private host tools')).toBeNull();
+  expect(screen.queryByText('Private report')).toBeNull();
   fireEvent.click(retry);
-  expect(screen.queryByText('Private host tools')).toBeNull();
+  expect(screen.queryByText('Private report')).toBeNull();
 });
