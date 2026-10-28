@@ -1,47 +1,65 @@
-import React, { useState, useEffect } from 'react';
+import PropTypes from 'prop-types';
+import { useState, useEffect, useRef, useMemo, useDeferredValue } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import socket from '../utils/socket';
 import QRCode from 'react-qr-code';
-import { FaCopy, FaEye, FaEyeSlash, FaQuestionCircle, FaCheckCircle, FaArrowRight, FaArrowUp, FaArrowDown, FaTimes, FaEdit } from 'react-icons/fa';
-import { AiFillStar, AiOutlineStar } from 'react-icons/ai';
-import { ToastContainer, toast } from 'react-toastify';
+import { FaCopy, FaQuestionCircle, FaCheckCircle, FaTimes } from 'react-icons/fa';
+import { toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
-import axios from 'axios';
+import axios from '../utils/http';
 import stringSimilarity from 'string-similarity';
-import { createRoom, submitDoubt, getDoubts, getRoom } from '../utils/api';
+import { getDoubts } from '../utils/api';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
-const DEFAULT_FRONTEND_ORIGIN = 'https://undoubt-ai.vercel.app';
-const RAW_FRONTEND_URL = import.meta.env.VITE_FRONTEND_URL || (typeof window !== 'undefined' ? window.location.origin : DEFAULT_FRONTEND_ORIGIN);
-const FRONTEND_URL = (() => {
-  try {
-    const parsed = new URL(RAW_FRONTEND_URL);
-    const isLocalhost = ['localhost', '127.0.0.1'].includes(parsed.hostname);
-    if (isLocalhost) return parsed.origin;
-    if (parsed.hostname.endsWith('vercel.app') && parsed.hostname !== 'undoubt-ai.vercel.app') {
-      return DEFAULT_FRONTEND_ORIGIN;
-    }
-    return parsed.origin;
-  } catch (_) {
-    return DEFAULT_FRONTEND_ORIGIN;
-  }
-})();
+import DoubtCard from '../components/DoubtCard';
+import { FRONTEND_URL } from '../utils/constants';
+import { mergeDoubts, updateDoubt, reconcileSnapshot } from '../utils/roomFeed';
+import useQuestionDraft from '../hooks/useQuestionDraft';
+import { copyText } from '../utils/roomLinks';
+
 
 const RoomPage = ({ role }) => {
   const { roomId } = useParams();
-  const navigate = useNavigate();
   const { user } = useAuth();
+  return <RoomSession key={`${user.id}:${roomId}`} role={role} roomId={roomId} user={user} />;
+};
 
+const RoomSession = ({ role, roomId, user }) => {
+  const navigate = useNavigate();
+  const draft = useQuestionDraft(user.id, roomId);
+  const newDoubt = draft.text;
+  const setNewDoubt = draft.setText;
+
+  const pendingVotes = useRef(new Set());
+  const pendingAnswers = useRef(new Set());
+  const submissionInFlight = useRef(false);
+  const questionInput = useRef(null);
+  const questionWorkspace = useRef(null);
+  const qrDialog = useRef(null);
   const [doubts, setDoubts] = useState([]);
-  const [newDoubt, setNewDoubt] = useState('');
-  const [similarity, setSimilarity] = useState(0);
-  const [upvotedDoubts, setUpvotedDoubts] = useState(new Set(JSON.parse(localStorage.getItem('upvotedDoubts') || '[]')));
+  const [search, setSearch] = useState('');
+  const [sortOrder, setSortOrder] = useState('popular');
+  const [votingIds, setVotingIds] = useState(new Set());
+  const [answeringIds, setAnsweringIds] = useState(new Set());
+  const [submissionMessage, setSubmissionMessage] = useState('');
+  const [connectionState, setConnectionState] = useState('connecting');
+  const [visibleLimit, setVisibleLimit] = useState(50);
+  const [showTools, setShowTools] = useState(false);
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  const [onlyMine, setOnlyMine] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [connected, setConnected] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const deferredDraft = useDeferredValue(newDoubt);
+  const [upvotedDoubts, setUpvotedDoubts] = useState(new Set());
   const [visibleEmails, setVisibleEmails] = useState(new Set());
   const [isRoomClosed, setIsRoomClosed] = useState(false);
   const [roomClosureMessage, setRoomClosureMessage] = useState('');
   const [activeTab, setActiveTab] = useState('active'); // 'active' or 'answered'
-  const [showQRCode, setShowQRCode] = useState(true);
+  const [showQRCode, setShowQRCode] = useState(false);
   const [recentlyAnswered, setRecentlyAnswered] = useState(new Set());
   const [transitioningToAnswered, setTransitioningToAnswered] = useState(new Set());
   const [isQrFullscreen, setIsQrFullscreen] = useState(false);
@@ -50,65 +68,107 @@ const RoomPage = ({ role }) => {
   const [animateStagger, setAnimateStagger] = useState(true);
 
   useEffect(() => {
-    socket.emit('joinRoom', roomId, role, user.id);
+    let disposed = false;
+    let pendingSnapshotUpdates = [];
+    let questionsDuringJoin = new Set();
+    let lastPeerNotification = -Infinity;
+    setDoubts([]);
+    setUpvotedDoubts(new Set());
+    const seenQuestions = new Set();
+    const seenAnswers = new Set();
+    const timers = new Set();
+    const later = (callback, delay) => {
+      const timer = setTimeout(() => { timers.delete(timer); if (!disposed) callback(); }, delay);
+      timers.add(timer);
+    };
+    const join = () => {
+      pendingSnapshotUpdates = [];
+      questionsDuringJoin = new Set();
+      setConnected(false);
+      setConnectionState('connecting');
+      socket.timeout(10000).emit('joinRoom', roomId, (error, result) => {
+        if (disposed) return;
+        if (error) { setConnectionState('disconnected'); toast.error('Could not join the room. Please reconnect.'); return; }
+        setConnected(!!result?.ok);
+        setConnectionState(result?.ok ? 'connected' : 'disconnected');
+        if (!result?.ok && [404, 410].includes(result?.status)) {
+          setIsRoomClosed(true);
+          setRoomClosureMessage(result.message);
+        }
+      });
+    };
+    const expired = () => { socket.disconnect(); socket.connect(); };
+    socket.on('sessionExpired', expired);
+    const disconnected = () => { setConnected(false); setConnectionState('disconnected'); };
+    const failure = error => toast.error(error.message, { toastId: `room-error-${error.message}` });
+    const connectionFailure = error => { disconnected(); failure(error); };
+    socket.on('connect', join);
+    socket.on('disconnect', disconnected);
+    socket.on('connect_error', connectionFailure);
+    socket.on('operationError', failure);
 
-    socket.on('existingDoubts', (existingDoubts) => {
-      setDoubts(existingDoubts);
-      const upvoted = new Set(existingDoubts.filter(d => d.upvotedBy.includes(user.id)).map(d => d.id));
-      setUpvotedDoubts(upvoted);
+    socket.on('existingDoubts', (existingDoubts, cursor) => {
+      existingDoubts.forEach(d => { seenQuestions.add(d.id); if (d.answered) seenAnswers.add(d.id); });
+      setNextCursor(cursor);
+      const updates = pendingSnapshotUpdates || [];
+      const liveIds = questionsDuringJoin;
+      pendingSnapshotUpdates = null;
+      setDoubts(previous => reconcileSnapshot(previous, existingDoubts, updates, liveIds));
+      setUpvotedDoubts(previous => {
+        const next = new Set(previous);
+        for (const doubt of existingDoubts) {
+          if (doubt.upvotedBy.includes(user.id)) next.add(doubt.id); else next.delete(doubt.id);
+        }
+        return next;
+      });
     });
 
     socket.on('roomInfo', (info) => {
+      setIsRoomClosed(info?.status === 'closed');
+      setRoomClosureMessage(info?.status === 'closed' ? 'This session has ended. You can revisit questions and host replies here.' : '');
       if (info && typeof info.topic === 'string') {
         const nm = info.topic.trim();
-        if (nm) {
-          setRoomName((prev) => prev || nm);
-          try { localStorage.setItem(`roomName:${roomId}`, nm); } catch (e) {}
-        }
+        setRoomName(nm);
+        try { localStorage.setItem(`roomName:${roomId}`, nm); } catch { /* Storage may be unavailable. */ }
       }
     });
     socket.on('roomTopicUpdated', ({ topic }) => {
       const nm = (topic || '').trim();
       setRoomName(nm);
-      try { localStorage.setItem(`roomName:${roomId}`, nm); } catch (e) {}
+      try { localStorage.setItem(`roomName:${roomId}`, nm); } catch { /* Storage may be unavailable. */ }
     });
 
     socket.on('newDoubt', (doubt) => {
-      setDoubts((prevDoubts) => [...prevDoubts, doubt]);
-      toast.info(`New Doubt: ${doubt.text}`, {
-        position: "top-right",
-        autoClose: 5000,
-        hideProgressBar: false,
-        closeOnClick: true,
-        pauseOnHover: true,
-        draggable: true,
-        progress: undefined,
-        theme: "colored",
-        style: { backgroundColor: '#AA60C8' }
-      });
+      if (pendingSnapshotUpdates) questionsDuringJoin.add(doubt.id);
+      setDoubts(previous => mergeDoubts(previous, [doubt]));
+      if (seenQuestions.has(doubt.id)) return;
+      seenQuestions.add(doubt.id);
+      if (doubt.isOwn) toast.success('Question submitted', { toastId: 'question-' + doubt.id });
+      else if (Date.now() - lastPeerNotification > 3000) {
+        lastPeerNotification = Date.now();
+        toast.info('New questions added', { toastId: 'room-questions-' + roomId });
+      }
     });
 
-    socket.on('upvoteDoubt', (doubtId) => {
-      setDoubts((prevDoubts) =>
-        prevDoubts.map((doubt) =>
-          doubt.id === doubtId ? { ...doubt, upvotes: doubt.upvotes + 1 } : doubt
-        )
-      );
+    socket.on('upvoteDoubt', ({ doubtId, upvotes, revision }) => {
+      pendingSnapshotUpdates?.push({ id: doubtId, upvotes, revision });
+      setDoubts(previous => updateDoubt(previous, { id: doubtId, upvotes, revision }));
     });
 
-    socket.on('downvoteDoubt', (doubtId) => {
-      setDoubts((prevDoubts) =>
-        prevDoubts.map((doubt) =>
-          doubt.id === doubtId ? { ...doubt, upvotes: doubt.upvotes - 1 } : doubt
-        )
-      );
+    socket.on('downvoteDoubt', ({ doubtId, upvotes, revision }) => {
+      pendingSnapshotUpdates?.push({ id: doubtId, upvotes, revision });
+      setDoubts(previous => updateDoubt(previous, { id: doubtId, upvotes, revision }));
     });
 
-    socket.on('markAsAnswered', (doubtId, answered) => {
+    socket.on('markAsAnswered', (doubtId, answered, update) => {
+      if (update) pendingSnapshotUpdates?.push({ ...update, id: doubtId });
+      if (update) setDoubts(previous => previous.map(d => d.id === doubtId && update.revision >= (d.revision || 0) ? { ...d, ...update } : d));
+      if (answered && seenAnswers.has(doubtId)) return;
+      if (answered) seenAnswers.add(doubtId); else seenAnswers.delete(doubtId);
       if (answered) {
         // Stage slide-out in Active for all clients
         setTransitioningToAnswered((prev) => new Set(prev).add(doubtId));
-        setTimeout(() => {
+        later(() => {
           setDoubts((prevDoubts) =>
             prevDoubts.map((doubt) =>
               doubt.id === doubtId ? { ...doubt, answered: true } : doubt
@@ -119,7 +179,7 @@ const RoomPage = ({ role }) => {
             next.add(doubtId);
             return next;
           });
-          setTimeout(() => {
+          later(() => {
             setRecentlyAnswered((prev) => {
               const next = new Set(prev);
               next.delete(doubtId);
@@ -127,7 +187,7 @@ const RoomPage = ({ role }) => {
             });
           }, 600);
           // Clean up exiting flag once moved
-          setTimeout(() => {
+          later(() => {
             setTransitioningToAnswered((prev) => {
               const next = new Set(prev);
               next.delete(doubtId);
@@ -142,7 +202,8 @@ const RoomPage = ({ role }) => {
           )
         );
       }
-      toast.success('Doubt marked as answered!', {
+      toast.success(answered ? 'Question marked as answered' : 'Question reopened', {
+        toastId: 'answer-' + doubtId,
         position: "top-right",
         autoClose: 3000,
         theme: "colored",
@@ -152,8 +213,10 @@ const RoomPage = ({ role }) => {
 
     socket.on('roomClosed', () => {
       setIsRoomClosed(true);
-      setRoomClosureMessage('The room was closed, kindly leave the room');
-      toast.error('Room was closed, kindly leave the room', {
+      setConfirmClose(false);
+      setRoomClosureMessage('This session has ended. You can revisit questions and host replies here.');
+      toast.info('Session ended. Questions and replies remain available.', {
+        toastId: 'closed-' + roomId,
         position: "top-right",
         autoClose: 5000,
         theme: "colored",
@@ -161,7 +224,17 @@ const RoomPage = ({ role }) => {
       });
     });
 
+    if (socket.connected) join();
+    else socket.connect();
     return () => {
+      disposed = true;
+      timers.forEach(clearTimeout);
+      socket.off('sessionExpired', expired);
+      socket.off('connect', join);
+      socket.off('disconnect', disconnected);
+      socket.off('connect_error', connectionFailure);
+      socket.off('operationError', failure);
+      socket.disconnect();
       socket.off('existingDoubts');
       socket.off('roomInfo');
       socket.off('newDoubt');
@@ -174,33 +247,14 @@ const RoomPage = ({ role }) => {
   }, [roomId, role, user.id, navigate]);
 
   useEffect(() => {
-    const fetchDoubts = async () => {
-      const response = await axios.get(`${API_BASE_URL}/rooms/${roomId}/doubts`);
-      setDoubts(response.data);
-    };
-
-    fetchDoubts();
+    // Sockets via 'existingDoubts' will naturally populate doubts upon joining.
+    // Fetching here explicitly races the websocket and causes redundant payload fetching.
     try {
       const stored = localStorage.getItem(`roomName:${roomId}`);
       if (stored && stored.trim()) setRoomName(stored.trim());
-    } catch (e) {
+    } catch {
       // ignore storage errors
     }
-    // Try to fetch from API to keep name consistent for all users
-    (async () => {
-      try {
-        const resp = await getRoom(roomId);
-        if (resp && resp.exists && resp.room && typeof resp.room.topic === 'string') {
-          const apiName = resp.room.topic.trim();
-          if (apiName) {
-            setRoomName(apiName);
-            try { localStorage.setItem(`roomName:${roomId}`, apiName); } catch (e) {}
-          }
-        }
-      } catch (e) {
-        // ignore fetch errors
-      }
-    })();
   }, [roomId]);
 
   // Run stagger animation only on initial mount and when tab changes
@@ -209,6 +263,12 @@ const RoomPage = ({ role }) => {
     const timer = setTimeout(() => setAnimateStagger(false), 700);
     return () => clearTimeout(timer);
   }, [activeTab]);
+
+  useEffect(() => { setVisibleLimit(50); }, [activeTab, search, onlyMine, roomId, sortOrder]);
+
+  useEffect(() => {
+    if (composerExpanded) questionInput.current?.focus();
+  }, [composerExpanded]);
 
   const handleAddDoubt = () => {
     if (newDoubt.trim() === '') {
@@ -221,42 +281,39 @@ const RoomPage = ({ role }) => {
       return;
     }
 
-    const doubt = {
-      id: Math.random().toString(36).substring(2, 15),
-      text: newDoubt,
-      user: user.emailAddresses[0].emailAddress,
-      upvotes: 0,
-      createdAt: new Date().toISOString(),
-      answered: false,
-    };
-    socket.emit('newDoubt', roomId, doubt);
-    setNewDoubt('');
-    setSimilarity(0);
-          toast.success('Doubt submitted successfully!', {
-        position: "top-right",
-        autoClose: 3000,
-        theme: "colored",
-        priority: 1,
-      });
+    if (!connected || !socket.connected || submissionInFlight.current || isRoomClosed) return;
+    const doubt = draft.prepare();
+    submissionInFlight.current = true;
+    setSubmissionMessage('');
+    setSubmitting(true);
+    socket.timeout(10000).emit('newDoubt', roomId, doubt, (error, result) => {
+      setSubmitting(false);
+      submissionInFlight.current = false;
+      if (error) { setSubmissionMessage('No confirmation yet. Retry this question safely; it will only be saved once.'); return; }
+      if (!result?.ok) { setSubmissionMessage(result?.message || 'Your question could not be submitted. Your draft is kept.'); return; }
+      if (result.doubt) setDoubts(previous => mergeDoubts(previous, [result.doubt]));
+      if (draft.acknowledge(doubt)) setComposerExpanded(false);
+    });
   };
 
   const handleToggleUpvote = (id) => {
-    if (upvotedDoubts.has(id)) {
-      socket.emit('downvoteDoubt', roomId, id, user.id);
-      setUpvotedDoubts((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(id);
-        localStorage.setItem('upvotedDoubts', JSON.stringify(Array.from(newSet)));
-        return newSet;
+    if (!connected || isRoomClosed || pendingVotes.current.has(id)) return;
+    pendingVotes.current.add(id);
+    setVotingIds(new Set(pendingVotes.current));
+    const event = upvotedDoubts.has(id) ? 'downvoteDoubt' : 'upvoteDoubt';
+    socket.timeout(10000).emit(event, roomId, id, (error, result) => {
+      pendingVotes.current.delete(id);
+      setVotingIds(new Set(pendingVotes.current));
+      if (error) return toast.error('Vote not confirmed. Reconnect to refresh your votes.');
+      if (!result?.ok) return;
+      setUpvotedDoubts(previous => {
+        const next = new Set(previous);
+        if (result.voted) next.add(id); else next.delete(id);
+        return next;
       });
-    } else {
-      socket.emit('upvoteDoubt', roomId, id, user.id);
-      setUpvotedDoubts((prev) => {
-        const newSet = new Set(prev).add(id);
-        localStorage.setItem('upvotedDoubts', JSON.stringify(Array.from(newSet)));
-        return newSet;
-      });
-    }
+      setDoubts(previous => previous.map(d => d.id === id && (result.revision || 0) >= (d.revision || 0)
+        ? { ...d, upvotes: result.upvotes, revision: result.revision } : d));
+    });
   };
 
   const handleToggleEmailVisibility = (id) => {
@@ -272,70 +329,45 @@ const RoomPage = ({ role }) => {
   };
 
   const handleMarkAsAnswered = (id) => {
-    // Phase 1: animate out from Active tab before server update
-    setTransitioningToAnswered((prev) => new Set(prev).add(id));
-    setTimeout(() => {
-      socket.emit('markAsAnswered', roomId, id);
-      // Phase 2: after answered event arrives, item will move to Answered and play slide-in
-      // Clean up the transitioning flag slightly after to allow removal from Active
-      setTimeout(() => {
-        setTransitioningToAnswered((prev) => {
-          const next = new Set(prev);
-          next.delete(id);
-          return next;
-        });
-      }, 100);
-    }, 250);
+    if (!connected || pendingAnswers.current.has(id)) return;
+    pendingAnswers.current.add(id);
+    setAnsweringIds(new Set(pendingAnswers.current));
+    socket.timeout(10000).emit('markAsAnswered', roomId, id, (error, result) => {
+      pendingAnswers.current.delete(id);
+      setAnsweringIds(new Set(pendingAnswers.current));
+      if (error) toast.error('Answer status not confirmed. Please reconnect.');
+      if (result?.ok && result.update) setDoubts(previous => updateDoubt(previous, { ...result.update, id }));
+    });
   };
 
-  const handleCopyRoomId = () => {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(roomId).then(() => {
-        toast.success('Room ID copied to clipboard!', {
-          position: "top-right",
-          autoClose: 2000,
-          theme: "colored",
-          priority: 1,
-        });
-      }).catch((err) => {
-        toast.error('Failed to copy Room ID', {
-          position: "top-right",
-          autoClose: 3000,
-          theme: "colored",
-          priority: 5,
-        });
-        console.error('Failed to copy Room ID:', err);
-      });
-    } else {
-      const textArea = document.createElement('textarea');
-      textArea.value = roomId;
-      document.body.appendChild(textArea);
-      textArea.select();
-      try {
-        document.execCommand('copy');
-        toast.success('Room ID copied to clipboard!', {
-          position: "top-right",
-          autoClose: 2000,
-          theme: "colored",
-          priority: 1,
-        });
-      } catch (err) {
-        toast.error('Failed to copy Room ID', {
-          position: "top-right",
-          autoClose: 3000,
-          theme: "colored",
-          priority: 5,
-        });
-        console.error('Failed to copy Room ID:', err);
-      }
-      document.body.removeChild(textArea);
-    }
+  const handleReply = (id, answer) => new Promise(resolve => {
+    if (!connected || pendingAnswers.current.has(id)) return resolve(false);
+    pendingAnswers.current.add(id);
+    socket.timeout(10000).emit('markAsAnswered', roomId, id, answer, (error, result) => {
+      pendingAnswers.current.delete(id);
+      if (error) { toast.error('Reply not confirmed. Your draft is kept; reconnect before retrying.'); return resolve(false); }
+      if (result?.ok && result.update) setDoubts(previous => previous.map(d => d.id === id && result.update.revision >= (d.revision || 0) ? { ...d, ...result.update } : d));
+      resolve(!!result?.ok);
+    });
+  });
+
+  const handleCopy = async (value, label) => {
+    try { await copyText(value); toast.success(`${label} copied`, { toastId: 'room-copy' }); }
+    catch { toast.error('Copy is unavailable in this browser. Use the room code shown above.'); }
   };
+  const handleCopyRoomId = () => handleCopy(roomId, 'Room code');
+  const handleCopyRoomLink = () => handleCopy(`${FRONTEND_URL}/room/${roomId}`, 'Room link');
 
   const handleCloseRoom = async () => {
-    await axios.delete(`${API_BASE_URL}/rooms/${roomId}`);
-    socket.emit('closeRoom', roomId);
-    navigate('/');
+    if (closing) return;
+    setClosing(true);
+    try {
+      await axios.delete('/rooms/' + roomId);
+      setIsRoomClosed(true);
+      setConfirmClose(false);
+      setRoomClosureMessage('This session has ended. You can revisit questions and host replies here.');
+    } catch (error) { toast.error(error.response?.data?.message || 'Could not close room'); }
+    finally { setClosing(false); }
   };
 
   const handleLeaveRoom = () => {
@@ -345,23 +377,9 @@ const RoomPage = ({ role }) => {
   const handleDoubtChange = (e) => {
     const newDoubtText = e.target.value;
     setNewDoubt(newDoubtText);
+    setSubmissionMessage('');
 
-    if (newDoubtText.trim() === '') {
-      setSimilarity(0);
-      return;
-    }
 
-    const existingDoubtTexts = doubts
-      .filter(doubt => doubt && doubt.text && typeof doubt.text === 'string')
-      .map(doubt => doubt.text);
-
-    if (existingDoubtTexts.length === 0) {
-      setSimilarity(0);
-      return;
-    }
-
-    const bestMatch = stringSimilarity.findBestMatch(newDoubtText, existingDoubtTexts);
-    setSimilarity(bestMatch.bestMatch.rating * 100);
   };
 
   const toggleQRCode = () => {
@@ -376,7 +394,7 @@ const RoomPage = ({ role }) => {
     const availableWidth = Math.max(0, vw - horizontalPadding);
     const availableHeight = Math.max(0, vh - verticalReserved);
     const size = Math.floor(Math.min(availableWidth, availableHeight));
-    setQrFullscreenSize(Math.max(220, size));
+    setQrFullscreenSize(Math.max(128, size));
   };
 
   const openQrFullscreen = () => {
@@ -387,9 +405,21 @@ const RoomPage = ({ role }) => {
 
   useEffect(() => {
     if (!isQrFullscreen) return;
+    const previousFocus = document.activeElement;
+    qrDialog.current?.querySelector('button')?.focus();
+    const onKey = event => {
+      if (event.key === 'Escape') setIsQrFullscreen(false);
+      if (event.key !== 'Tab') return;
+      const controls = qrDialog.current?.querySelectorAll('button');
+      if (!controls?.length) return;
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
     const onResize = () => recomputeQrSize();
     window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    window.addEventListener('keydown', onKey);
+    return () => { window.removeEventListener('resize', onResize); window.removeEventListener('keydown', onKey); previousFocus?.focus(); };
   }, [isQrFullscreen]);
 
   // Download doubts/questions as a text file
@@ -398,7 +428,7 @@ const RoomPage = ({ role }) => {
       toast.info('No doubts to download.');
       return;
     }
-    const lines = doubts.map((d, idx) => `${idx + 1}. ${d.text} [${d.answered ? 'Answered' : 'Active'}]`);
+    const lines = doubts.map((d, idx) => `${idx + 1}. ${d.text} [${d.answered ? 'Answered' : 'Unanswered'}]${d.answer ? '\nHost reply: ' + d.answer : ''}`);
     const content = lines.join('\n');
     const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -411,150 +441,57 @@ const RoomPage = ({ role }) => {
     URL.revokeObjectURL(url);
   };
 
-  // Separate active and answered doubts
-  const activeDoubts = doubts.filter(doubt => !doubt.answered || transitioningToAnswered.has(doubt.id));
-  const answeredDoubts = doubts.filter(doubt => doubt.answered);
-
-  // Sort doubts by upvotes and then by creation time
-  const sortedActiveDoubts = activeDoubts.sort((a, b) => {
-    if (b.upvotes === a.upvotes) {
-      return new Date(a.createdAt) - new Date(b.createdAt);
-    }
-    return b.upvotes - a.upvotes;
-  });
-
-  const sortedAnsweredDoubts = answeredDoubts.sort((a, b) => {
-    if (b.upvotes === a.upvotes) {
-      return new Date(a.createdAt) - new Date(b.createdAt);
-    }
-    return b.upvotes - a.upvotes;
-  });
-
-  const DoubtCard = ({ doubt, isAnswered = false, isExiting = false }) => {
-    const isUpvoted = upvotedDoubts.has(doubt.id);
-    const badgeColorClasses = isAnswered
-      ? 'text-emerald-200 border-emerald-400/40 bg-emerald-900/20'
-      : isUpvoted
-        ? 'text-yellow-200 border-yellow-400/40 bg-yellow-900/20'
-        : 'text-blue-200 border-blue-400/40 bg-blue-900/20';
-
-    const dotColorClass = isAnswered ? 'bg-emerald-300' : (isUpvoted ? 'bg-yellow-300' : 'bg-blue-300');
-
-    return (
-    <div
-      className={`relative p-4 mb-4 rounded-xl shadow-lg transition-all duration-300 hover:shadow-xl transform hover:scale-[1.01] ${
-        isAnswered 
-          ? 'bg-emerald-900/30 border border-emerald-400/30' 
-          : 'bg-gray-900/50 border border-blue-500/30'
-      } ${isAnswered && recentlyAnswered.has(doubt.id) ? 'doubt-slide-in answered-sweep' : ''} ${!isAnswered && isExiting ? 'doubt-slide-out-left' : ''}`}
-    >
-      <div className="flex items-start justify-between">
-        <div className="flex-1 mr-3">
-          <p className={`text-lg font-medium mb-2 ${isAnswered ? 'text-emerald-200' : 'text-gray-100'}`}>
-            {doubt.text}
-          </p>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <span className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-semibold border ${badgeColorClasses} ${isUpvoted && !isAnswered ? 'ring-1 ring-yellow-400/30 scale-[1.02]' : ''} transition-transform`}> 
-                <span className={`w-1.5 h-1.5 rounded-full mr-2 ${dotColorClass}`}></span>
-                {doubt.upvotes} upvotes
-              </span>
-              {isAnswered && (
-                <span className="text-sm text-emerald-300 font-semibold flex items-center">
-                  <FaCheckCircle className="mr-1" />
-                  Answered
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-3 flex-wrap justify-end">
-              {role === 'host' && (
-                <>
-                  <button
-                    onClick={() => handleToggleEmailVisibility(doubt.id)}
-                    className="px-3 py-2 text-gray-200 hover:text-white bg-gray-700/30 hover:bg-gray-700/50 border border-gray-500/30 rounded-lg transition-colors shrink-0 flex items-center gap-2"
-                    title={visibleEmails.has(doubt.id) ? 'Hide email' : 'Show email'}
-                  >
-                    {visibleEmails.has(doubt.id) ? <FaEyeSlash /> : <FaEye />}
-                    <span className="hidden sm:inline text-sm">Email</span>
-                  </button>
-                  {visibleEmails.has(doubt.id) && (
-                    <span className="text-xs text-gray-200 bg-gray-800 px-2 py-1 rounded border border-gray-700 max-w-[60vw] sm:max-w-xs overflow-hidden text-ellipsis whitespace-nowrap">
-                      {doubt.user}
-                    </span>
-                  )}
-                  <span className="hidden sm:block w-px h-6 bg-white/10" />
-                  {!isAnswered && (
-                    <button
-                      onClick={() => handleMarkAsAnswered(doubt.id)}
-                      className="px-3 py-2 text-emerald-100 bg-emerald-700/30 hover:bg-emerald-600/40 border border-emerald-400/40 rounded-lg transition-colors flex items-center gap-2 shrink-0"
-                      title="Mark as answered"
-                    >
-                      <FaArrowRight className="text-2xl" />
-                      <span className="hidden sm:inline text-sm font-semibold">Mark answered</span>
-                    </button>
-                  )}
-                </>
-              )}
-              {role !== 'host' && (
-                <button
-                  onClick={() => handleToggleUpvote(doubt.id)}
-                  className={`p-2 rounded-full transition-all duration-200 ${
-                    upvotedDoubts.has(doubt.id) 
-                      ? 'text-yellow-300 bg-yellow-900/20 ring-1 ring-yellow-400/30' 
-                      : 'text-gray-400 hover:text-yellow-300 hover:bg-yellow-900/10'
-                  }`}
-                  title={upvotedDoubts.has(doubt.id) ? 'Remove upvote' : 'Upvote'}
-                >
-                  {upvotedDoubts.has(doubt.id) ? (
-                    <AiFillStar className="text-xl" />
-                  ) : (
-                    <AiOutlineStar className="text-xl" />
-                  )}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-  };
-
-  const similarDoubt = doubts.find(
-    (doubt) =>
-      doubt &&
-      doubt.text &&
-      typeof doubt.text === 'string' &&
-      stringSimilarity.compareTwoStrings(newDoubt, doubt.text) > 0.7
-  );
+  const [sortedActiveDoubts, sortedAnsweredDoubts] = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    const filtered = doubts.filter(d => (!onlyMine || d.isOwn) && `${d.text} ${d.answer || ''}`.toLowerCase().includes(query));
+    const time = doubt => Date.parse(doubt.createdAt) || 0;
+    const compare = (a, b) => sortOrder === 'newest' ? time(b) - time(a) : sortOrder === 'oldest' ? time(a) - time(b) : b.upvotes - a.upvotes || time(a) - time(b);
+    return [filtered.filter(d => !d.answered || transitioningToAnswered.has(d.id)).sort(compare), filtered.filter(d => d.answered).sort(compare)];
+  }, [doubts, onlyMine, search, transitioningToAnswered, sortOrder]);
+  const similarDoubt = useMemo(() => deferredDraft.trim().length < 3 ? undefined : doubts.find(doubt =>
+    typeof doubt.text === 'string' && stringSimilarity.compareTwoStrings(deferredDraft, doubt.text) > 0.7), [deferredDraft, doubts]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-900 via-purple-800 to-black text-white">
+    <div className="room-screen min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 text-white">
+      <div role="status" className="room-status px-6 py-2 text-sm bg-gray-900">{!connected ? connectionState === 'connecting' ? 'Connecting to your session…' : 'Connection lost · your draft is kept. Reconnect to send or vote.' : isRoomClosed ? 'Closed session · replies available' : 'Live session'}<span className="room-status-count"> · {doubts.length} questions · {doubts.filter(d => d.answered).length} answered</span>
+        {!connected && connectionState !== 'connecting' && <button className="ml-4 underline" onClick={() => { setConnectionState('connecting'); socket.disconnect(); socket.connect(); }}>Reconnect</button>}
+      </div>
+      {nextCursor && <button disabled={loadingEarlier || !connected} className="m-4 px-4 py-2 bg-blue-700 rounded" onClick={async () => {
+        if (loadingEarlier) return;
+        setLoadingEarlier(true);
+        try {
+          const page = await getDoubts(roomId, nextCursor);
+          setDoubts(previous => mergeDoubts(previous, page.doubts));
+          setUpvotedDoubts(previous => new Set([...previous, ...page.doubts.filter(d => d.upvotedBy.includes(user.id)).map(d => d.id)]));
+          setNextCursor(page.nextCursor);
+        } catch { toast.error('Could not load earlier questions'); }
+        finally { setLoadingEarlier(false); }
+      }}>{loadingEarlier ? 'Loading…' : 'Load earlier questions'}</button>}
       {/* Header Section */}
-      <div className="sticky top-0 z-50 bg-gray-900 bg-opacity-95 backdrop-blur-sm border-b border-gray-700">
-        <div className="max-w-7xl mx-auto px-4 py-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <div className="flex flex-col">
-                {roomName && (
+      <div className="room-header bg-gray-900 border-b border-gray-700">
+        <div className="room-header-inner mx-auto px-4 py-3">
+          <div className="room-header-row">
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              <div className="flex flex-col min-w-0 w-full">
+                {(
                   <div className="flex items-center gap-2">
                     {role === 'host' ? (
-                      <input
+                      <input aria-label="Room topic" disabled={isRoomClosed || !connected} maxLength={200}
                         value={roomName}
                         onChange={(e) => setRoomName(e.target.value)}
-                        onBlur={() => socket.emit('updateRoomTopic', roomId, roomName)}
+                        onBlur={() => { if (connected && !isRoomClosed) socket.emit('updateRoomTopic', roomId, roomName); }}
                         placeholder="Room topic"
-                        className="text-xl sm:text-2xl md:text-3xl font-bold bg-transparent border-b border-white/20 focus:border-white/40 focus:outline-none px-1"
+                        className="min-w-0 w-full text-xl sm:text-2xl md:text-3xl font-bold bg-transparent border-b border-white/20 focus:border-white/40 focus:outline-none px-1"
                       />
                     ) : (
-                      <h1 className="text-xl sm:text-2xl md:text-3xl font-bold">{roomName}</h1>
+                      <h1 className="min-w-0 break-words text-xl sm:text-2xl md:text-3xl font-bold">{roomName || 'Question room'}</h1>
                     )}
                     <span className={`text-[10px] sm:text-xs px-2 py-1 rounded-full border ${role==='host' ? 'bg-purple-700/30 text-purple-200 border-purple-400/30' : 'bg-blue-700/30 text-blue-200 border-blue-400/30'}`}>
                       {role === 'host' ? 'HOST' : 'PARTICIPANT'}
                     </span>
                   </div>
                 )}
-                <div className="flex items-center gap-2 mt-1">
+                <div className="room-code-row flex items-center gap-2 mt-1">
                   <span className="inline-block text-xs sm:text-sm text-gray-300 bg-gray-800 px-2 py-0.5 rounded">ID: {roomId}</span>
                   <button
                     onClick={handleCopyRoomId}
@@ -566,8 +503,11 @@ const RoomPage = ({ role }) => {
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-2 flex-wrap justify-end">
-              {role !== 'participant' && (
+            <div className="room-controls">
+              <button className="room-tools-toggle" aria-expanded={showTools} aria-controls="room-tools" onClick={() => setShowTools(value => !value)}>Session options <span aria-hidden="true">{showTools ? '−' : '+'}</span></button>
+              <div id="room-tools" className={`room-tools ${showTools ? 'is-open' : ''}`}>
+              {!isRoomClosed && <button onClick={handleCopyRoomLink} className="px-3 py-2 bg-blue-700 rounded-lg">Copy room link</button>}
+              {role === 'host' && !isRoomClosed && (
                 <>
                   <button
                     onClick={toggleQRCode}
@@ -576,33 +516,40 @@ const RoomPage = ({ role }) => {
                     {showQRCode ? 'Hide QR' : 'Show QR'}
                   </button>
                   <button
-                    onClick={handleCloseRoom}
+                    disabled={!connected || closing}
+                    onClick={() => setConfirmClose(true)}
                     className="px-3 py-1.5 text-xs sm:text-sm bg-red-600 hover:bg-red-700 rounded-lg transition-colors shrink-0"
                   >
                     Close Room
                   </button>
                 </>
               )}
-              {role !== 'host' && (
+              {(
                 <button
                   onClick={handleLeaveRoom}
                   className="px-3 py-1.5 text-xs sm:text-sm bg-orange-600 hover:bg-orange-700 rounded-lg transition-colors text-white shrink-0"
                 >
-                  Leave
+                  Back to sessions
                 </button>
               )}
+              </div>
             </div>
           </div>
         </div>
       </div>
 
+      {confirmClose && <section aria-label="Confirm session closure" className="max-w-3xl mx-auto m-4 p-5 rounded-xl border border-orange-300/40 bg-gray-900">
+        <h2 className="font-semibold text-lg">End this live session?</h2>
+        <p className="text-gray-300 my-3">New questions and votes will stop. Everyone who joined can revisit the session, and you can keep replying.</p>
+        <div className="flex flex-wrap gap-3"><button disabled={closing} onClick={handleCloseRoom} className="px-4 py-2 bg-red-700 rounded-lg">{closing ? 'Closing…' : 'End session'}</button><button disabled={closing} onClick={() => setConfirmClose(false)} className="px-4 py-2 bg-gray-700 rounded-lg">Keep live</button></div>
+      </section>}
       {/* QR Code Section (for hosts) */}
-      {role !== 'participant' && showQRCode && (
-        <div className="bg-gray-800 bg-opacity-50 p-4 border-b border-gray-700">
+      {role === 'host' && !isRoomClosed && showQRCode && (
+        <div className="room-share bg-gray-800 bg-opacity-50 p-4 border-b border-gray-700">
           <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-center space-y-4 sm:space-y-0 sm:space-x-8">
             <button onClick={openQrFullscreen} className="group focus:outline-none">
-              <QRCode 
-                value={`${FRONTEND_URL}/room/${roomId}`} 
+              <QRCode
+                value={`${FRONTEND_URL}/room/${roomId}`}
                 className="w-32 h-32 sm:w-40 sm:h-40 transition-transform duration-200 group-hover:scale-105 cursor-pointer"
               />
               <p className="mt-2 text-xs text-gray-400 hidden sm:block">Click QR to enlarge</p>
@@ -622,6 +569,7 @@ const RoomPage = ({ role }) => {
       {/* Fullscreen QR Modal */}
       {isQrFullscreen && (
         <div
+          ref={qrDialog} role="dialog" aria-modal="true" aria-label="Share room QR code"
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black bg-opacity-85 p-4 overflow-auto"
           onClick={closeQrFullscreen}
         >
@@ -638,7 +586,7 @@ const RoomPage = ({ role }) => {
               <QRCode value={`${FRONTEND_URL}/room/${roomId}`} size={qrFullscreenSize} />
               <p className="mt-4 text-gray-200 text-sm sm:text-base text-center px-4">{roomName ? `${roomName} • ` : ''}Scan to join • Room ID: <span className="font-mono text-orange-300">{roomId}</span></p>
               <button
-                onClick={() => navigator.clipboard.writeText(`${FRONTEND_URL}/room/${roomId}`).then(() => toast.success('Room link copied'))}
+                onClick={handleCopyRoomLink}
                 className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white text-sm font-semibold"
               >
                 <FaCopy className="inline mr-2" />Copy Join Link
@@ -650,73 +598,87 @@ const RoomPage = ({ role }) => {
 
       {/* Room Closure Message */}
       {roomClosureMessage && (
-        <div className="bg-red-600 text-white p-4 text-center flex flex-col items-center gap-4">
-          <p className="text-lg font-semibold">{roomClosureMessage}</p>
+        <div className="room-closure bg-slate-800 text-white p-4 text-center flex flex-col items-center gap-2">
+          <p className="text-base font-medium">{roomClosureMessage}</p>
+          {role === 'host' && <p className="text-sm text-gray-300">You can still reply to unanswered questions below.</p>}
           {/* Download Doubts Button (visible to all users after room is closed) */}
           <button
             onClick={handleDownloadDoubts}
             className="mt-2 px-6 py-3 bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-700 hover:from-purple-700 hover:to-indigo-800 text-white font-semibold rounded-lg shadow-lg transition-all duration-300 transform hover:scale-105"
           >
-            Download All Doubts
+            Download Loaded Questions
           </button>
         </div>
       )}
 
       {/* Main Content */}
-      <div className="max-w-7xl mx-auto px-4 py-6">
+      <div className={`room-layout ${role === 'participant' && !isRoomClosed ? 'has-composer' : ''}`}>
         {/* Doubt Input Section (for participants) */}
         {role === 'participant' && !isRoomClosed && (
-          <div className="mb-8 rounded-xl p-6 backdrop-blur-sm border border-white/10 bg-gradient-to-br from-gray-900/60 via-gray-900/40 to-gray-800/40">
-            <div className="space-y-4">
-              <div className="flex items-center space-x-2">
+          <div className={`question-composer ${composerExpanded ? 'is-expanded' : ''}`}>
+            <button className="composer-toggle" aria-expanded={composerExpanded} aria-controls="question-editor" onClick={() => setComposerExpanded(value => !value)}><FaQuestionCircle aria-hidden="true" /><span>{newDoubt ? 'Continue your question' : 'Ask a question'}</span><span aria-hidden="true">{composerExpanded ? '−' : '+'}</span></button>
+            <div id="question-editor" className="composer-body space-y-4">
+              <div className="composer-heading flex items-center space-x-2">
                 <FaQuestionCircle className="text-blue-300" />
                 <h2 className="text-xl font-semibold text-gray-100">Ask Your Doubt</h2>
               </div>
-              <textarea
+              <textarea ref={questionInput} aria-label="Your question" aria-describedby="question-draft-help" maxLength={2000}
                 value={newDoubt}
                 onChange={handleDoubtChange}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) { event.preventDefault(); handleAddDoubt(); }
+                }}
                 placeholder="Type your doubt here..."
                 className="w-full h-24 p-4 bg-gray-900/80 text-gray-100 rounded-lg border border-blue-500/30 focus:border-blue-400 focus:outline-none resize-none placeholder-gray-400"
                 disabled={isRoomClosed}
               />
-              {similarity > 0 && (
-                <div className="flex items-center space-x-2 text-sm">
-                  <span className="text-gray-300">Similarity:</span>
-                  <span className={`font-semibold ${similarity > 70 ? 'text-red-300' : similarity > 40 ? 'text-yellow-300' : 'text-green-300'}`}>
-                    {similarity.toFixed(1)}%
-                  </span>
-                  {similarity > 70 && (
-                    <span className="text-red-300 text-xs">(Consider checking existing doubts)</span>
-                  )}
-                </div>
-              )}
+              <div id="question-draft-help" className="draft-help"><span>{newDoubt ? draft.saved ? 'Draft saved in this tab' : 'Draft kept while this page is open' : 'Only the host can see who asked.'}</span><span>{newDoubt.length}/2000</span></div>
+              <p className="keyboard-hint">Ctrl / ⌘ + Enter to submit. Enter adds a new line.</p>
+              {submissionMessage && <p className="interaction-error" role="alert">{submissionMessage}</p>}
               {similarDoubt && (
-                <div className="p-3 bg-red-900/20 border border-red-500/30 rounded-lg">
+                <div className="p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg">
                   <div className="flex items-start gap-2">
-                    <span className="text-red-300 text-sm">⚠️</span>
+                    <FaQuestionCircle className="text-blue-300 shrink-0 mt-1" aria-hidden="true" />
                     <div className="flex-1">
-                      <p className="text-red-200 text-sm font-medium">Similar doubt already exists:</p>
-                      <p className="text-red-100 text-sm mt-1 italic">"{similarDoubt.text}"</p>
-                      <p className="text-red-300 text-xs mt-1">Upvotes: {similarDoubt.upvotes}</p>
+                      <p className="text-blue-200 text-sm font-medium">Someone has a similar question:</p>
+                      <p className="text-gray-200 text-sm mt-1">&quot;{similarDoubt.text}&quot;</p>
+                      <p className="text-blue-200 text-xs mt-1">Upvotes: {similarDoubt.upvotes}</p>
+                      <button className="similar-question-link" onClick={() => {
+                        setSearch(similarDoubt.text); setOnlyMine(false); setActiveTab(similarDoubt.answered ? 'answered' : 'active');
+                        questionWorkspace.current?.scrollIntoView?.({ block: 'start' });
+                        questionWorkspace.current?.focus();
+                      }}>{similarDoubt.answered ? 'Read the reply' : 'View this question'}</button>
                     </div>
                   </div>
                 </div>
               )}
               <button
-                onClick={handleAddDoubt}
-                disabled={isRoomClosed || newDoubt.trim() === ''}
+                  onClick={handleAddDoubt}
+                disabled={!connected || submitting || isRoomClosed || newDoubt.trim() === ''}
                 className="w-full sm:w-auto px-6 py-3 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition-all duration-300 transform hover:scale-105 disabled:transform-none"
               >
-                Submit Doubt
+                {submitting ? 'Submitting…' : 'Submit Doubt'}
               </button>
             </div>
           </div>
         )}
 
+        <section ref={questionWorkspace} tabIndex={-1} className="question-workspace" aria-label="Session questions">
+        <div className="question-filters">
+          <label className="flex-1 text-sm text-gray-200"><span className="sr-only">Search loaded questions and replies</span>
+            <input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by keyword…" className="block w-full bg-gray-900 border border-white/20 rounded-lg px-4 py-3" />
+          </label>
+          <button aria-pressed={onlyMine} onClick={() => setOnlyMine(value => !value)} className={`px-4 py-3 rounded-lg border border-white/20 ${onlyMine ? 'bg-blue-600' : 'bg-gray-900'}`}>My questions</button>
+          <div className="question-sort-row"><label htmlFor="question-sort">Sort questions</label><select id="question-sort" value={sortOrder} onChange={event => setSortOrder(event.target.value)}><option value="popular">Most upvoted</option><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
+            {(search || onlyMine) && <button onClick={() => { setSearch(''); setOnlyMine(false); }}>Clear filters</button>}
+          </div>
+        </div>
+        {nextCursor && <p className="text-sm text-gray-300 mb-4">Search and counts cover loaded questions. Load earlier questions to include more.</p>}
         {/* Tabs for Active and Answered Doubts */}
-        <div className="mb-6">
+        <div className="question-tabs">
           <div className="flex space-x-1 bg-gray-800 bg-opacity-50 rounded-lg p-1">
             <button
+              aria-pressed={activeTab === 'active'}
               onClick={() => setActiveTab('active')}
               className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all duration-200 ${
                 activeTab === 'active'
@@ -724,9 +686,10 @@ const RoomPage = ({ role }) => {
                   : 'text-gray-300 hover:text-white hover:bg-gray-700'
               }`}
             >
-              Active Doubts ({sortedActiveDoubts.length})
+              Unanswered ({sortedActiveDoubts.length})
             </button>
             <button
+              aria-pressed={activeTab === 'answered'}
               onClick={() => setActiveTab('answered')}
               className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all duration-200 ${
                 activeTab === 'answered'
@@ -740,25 +703,38 @@ const RoomPage = ({ role }) => {
         </div>
 
         {/* Doubts Container */}
-        <div className="space-y-6 border border-white/10 rounded-xl p-4 bg-black/10">
+        <div className="question-list space-y-6">
           {activeTab === 'active' ? (
             <div>
               <h3 className="text-xl font-semibold mb-4 flex items-center">
                 <FaQuestionCircle className="mr-2 text-blue-400" />
-                Active Doubts
+                Unanswered
               </h3>
               {sortedActiveDoubts.length === 0 ? (
                 <div className="text-center py-12 rounded-xl border border-white/10 bg-gray-900/40">
                   <FaQuestionCircle className="text-6xl text-gray-400 mx-auto mb-4" />
-                  <p className="text-xl text-gray-200 mb-2">No active doubts</p>
-                  {role === 'participant' && (
-                    <p className="text-gray-400">Be the first to ask a question!</p>
-                  )}
+                  <p className="text-xl text-gray-200 mb-2">No unanswered questions match</p>
+                  {role === 'participant' && !isRoomClosed && !search && !onlyMine && <p className="text-gray-400">Be the first to ask a question!</p>}
                 </div>
               ) : (
-                <div className={`space-y-4 ${animateStagger ? 'stagger-in' : ''}`}> 
-                  {sortedActiveDoubts.map((doubt) => (
-                    <DoubtCard key={doubt.id} doubt={doubt} isExiting={transitioningToAnswered.has(doubt.id)} />
+                <div className={`space-y-4 ${animateStagger ? 'stagger-in' : ''}`}>
+                  {sortedActiveDoubts.slice(0, visibleLimit).map((doubt) => (
+                    <DoubtCard
+                      key={doubt.id}
+                      doubt={doubt}
+                      onReply={handleReply}
+                      connected={connected}
+                      closed={isRoomClosed}
+                      isExiting={transitioningToAnswered.has(doubt.id)}
+                      upvotedDoubts={upvotedDoubts}
+                      role={role}
+                      visibleEmails={visibleEmails}
+                      recentlyAnswered={recentlyAnswered}
+                      onToggleEmailVisibility={handleToggleEmailVisibility}
+                      onMarkAsAnswered={handleMarkAsAnswered}
+                      onToggleUpvote={handleToggleUpvote}
+                      voting={votingIds.has(doubt.id)} answering={answeringIds.has(doubt.id)}
+                    />
                   ))}
                 </div>
               )}
@@ -775,48 +751,40 @@ const RoomPage = ({ role }) => {
                   <p className="text-xl text-gray-200">No answered doubts yet</p>
                 </div>
               ) : (
-                <div className={`space-y-4 ${animateStagger ? 'stagger-in' : ''}`}> 
-                  {sortedAnsweredDoubts.map((doubt) => (
-                    <DoubtCard key={doubt.id} doubt={doubt} isAnswered={true} />
+                <div className={`space-y-4 ${animateStagger ? 'stagger-in' : ''}`}>
+                  {sortedAnsweredDoubts.slice(0, visibleLimit).map((doubt) => (
+                    <DoubtCard
+                      key={doubt.id}
+                      doubt={doubt}
+                      onReply={handleReply}
+                      connected={connected}
+                      closed={isRoomClosed}
+                      isAnswered={true}
+                      upvotedDoubts={upvotedDoubts}
+                      role={role}
+                      visibleEmails={visibleEmails}
+                      recentlyAnswered={recentlyAnswered}
+                      onToggleEmailVisibility={handleToggleEmailVisibility}
+                      onMarkAsAnswered={handleMarkAsAnswered}
+                      onToggleUpvote={handleToggleUpvote}
+                      voting={votingIds.has(doubt.id)} answering={answeringIds.has(doubt.id)}
+                    />
                   ))}
                 </div>
               )}
             </div>
           )}
+          {(activeTab === 'active' ? sortedActiveDoubts.length : sortedAnsweredDoubts.length) > visibleLimit &&
+            <button type="button" className="mt-4 w-full rounded-xl border border-white/20 bg-white/5 px-4 py-3" onClick={() => setVisibleLimit(limit => limit + 50)}>
+              Show more questions
+            </button>}
         </div>
+        </section>
       </div>
-
-      <ToastContainer 
-        limit={2}
-        position="top-right"
-        autoClose={3000}
-        hideProgressBar={false}
-        newestOnTop={false}
-        closeOnClick={true}
-        rtl={false}
-        pauseOnFocusLoss={true}
-        draggable={true}
-        pauseOnHover={true}
-        theme="colored"
-        toastClassName="text-sm"
-        bodyClassName="text-sm font-medium"
-        progressClassName="bg-white/20"
-        style={{
-          fontSize: '14px',
-          maxWidth: '300px',
-          minWidth: '260px'
-        }}
-        toastStyle={{
-          marginBottom: '8px',
-          borderRadius: '8px',
-          padding: '8px 12px'
-        }}
-        enableMultiContainer={false}
-        closeButton={false}
-        icon={false}
-      />
     </div>
   );
 };
 
 export default RoomPage;
+RoomPage.propTypes = { role: PropTypes.string.isRequired };
+RoomSession.propTypes = { role: PropTypes.string.isRequired, roomId: PropTypes.string.isRequired, user: PropTypes.shape({ id: PropTypes.string.isRequired }).isRequired };

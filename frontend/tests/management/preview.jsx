@@ -1,0 +1,10 @@
+import { createRoot } from 'react-dom/client';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import '@fontsource-variable/inter';
+import '@fontsource-variable/manrope';
+import '../../src/index.css';
+import '../../src/App.css';
+import { AdminPage, OrganisationPage } from '../../src/pages/ManagementPages';
+import '../../src/theme.css';
+const path = new URLSearchParams(window.location.search).get('view') === 'organisation' ? '/organisation/11111111-1111-4111-8111-111111111111' : '/admin';
+createRoot(document.getElementById('root')).render(<><nav className="app-nav" style={{color:'white'}}><span className="brand"><span style={{color:'#fb923c'}}>Un</span>Doubt</span></nav><MemoryRouter initialEntries={[path]}><Routes><Route path="/admin" element={<AdminPage />} /><Route path="/organisation/:organisationId" element={<OrganisationPage />} /></Routes></MemoryRouter></>);

@@ -1,20 +1,23 @@
-import React, { useEffect, useState, createContext, useContext } from 'react';
+import PropTypes from 'prop-types';
+import { lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { logOut } from './config/firebase';
-import ProtectedRoute, { HostProtectedRoute, ParticipantProtectedRoute } from './components/ProtectedRoute';
+import ProtectedRoute, { HostProtectedRoute, ParticipantProtectedRoute, ManagementProtectedRoute, ReportProtectedRoute } from './components/ProtectedRoute';
 import HomePage from './pages/HomePage';
 import CreateRoomPage from './pages/CreateRoomPage';
 import JoinRoomPage from './pages/JoinRoomPage';
-import RoomPage from './pages/RoomPage';
+const RoomPage = lazy(() => import('./pages/RoomPage'));
+const SessionReportPage = lazy(() => import('./pages/SessionReportPage'));
 import LoginPage from './pages/LoginPage';
-import { account } from './utils/appwrite';
+const AdminPage = lazy(() => import('./pages/AdminPage'));
+const OrganisationPage = lazy(() => import('./pages/OrganisationPage'));
+
 import AccessDeniedPage from './pages/AccessDeniedPage';
 import { toast } from 'react-toastify';
 import './App.css';
+import './theme.css';
 
-const UserContext = createContext({ user: null, setUser: () => {} });
-export const useUser = () => useContext(UserContext);
 
 const Navigation = () => {
   const { user, isAuthenticated } = useAuth();
@@ -23,14 +26,14 @@ const Navigation = () => {
     try {
       await logOut();
       toast.success('Successfully logged out!');
-    } catch (error) {
+    } catch {
       toast.error('Failed to log out');
     }
   };
 
   return (
-    <nav className="flex justify-between items-center px-3 sm:px-5 py-2 sm:py-3 bg-gray-900 shadow-lg">
-      <Link className="text-2xl sm:text-3xl md:text-5xl font-bold text-gray-300 hover:text-orange-500 transition duration-300 cursor-pointer" to="/">
+    <nav className="app-nav flex justify-between items-center gap-2 px-3 sm:px-5 py-2 sm:py-3 bg-gray-900 text-white shadow-lg">
+      <Link className="brand text-2xl sm:text-3xl md:text-5xl font-bold text-gray-300 hover:text-orange-500 transition duration-300 cursor-pointer" to="/">
         <span className="text-orange-500">Un</span>Doubt
       </Link>
 
@@ -56,15 +59,15 @@ const Navigation = () => {
                 {user.firstName?.charAt(0)?.toUpperCase() || 'U'}
               </span>
             </div>
-            <span className="text-gray-300 text-sm sm:text-base hidden sm:inline">
+            <span className="text-gray-300 text-sm sm:text-base hidden sm:inline max-w-48 truncate">
               {user.firstName} {user.lastName}
             </span>
-            <span className="text-gray-300 text-xs sm:hidden">
+            <span className="text-gray-300 text-xs sm:hidden max-w-16 truncate">
               {user.firstName}
             </span>
             <button
               onClick={handleLogout}
-              className="px-2 py-1 sm:px-5 sm:py-2 text-xs sm:text-sm bg-red-600 hover:bg-red-700 rounded transition duration-300"
+              className="logout-button px-2 py-1 sm:px-5 sm:py-2 text-xs sm:text-sm bg-red-600 hover:bg-red-700 rounded transition duration-300"
             >
               Logout
             </button>
@@ -79,6 +82,7 @@ const Navigation = () => {
         )}
       </div>
     </nav>
+
   );
 };
 
@@ -105,14 +109,21 @@ const AppContent = () => {
 
 const AppRoutes = ({ isAuthenticated }) => {
   const location = useLocation();
-  
+
   // Check if current route is a room route
   const isRoomRoute = location.pathname.startsWith('/room/') || location.pathname.startsWith('/host/');
 
   return (
     <>
       {isAuthenticated && !isRoomRoute && <Navigation />}
-      <Routes>
+      {isAuthenticated && !isRoomRoute && <WorkspaceNavigation />}
+      <Suspense fallback={<p className="p-8 text-center" role="status">Loading your page…</p>}><Routes>
+        <Route path="/admin" element={<ManagementProtectedRoute platform><AdminPage /></ManagementProtectedRoute>} />
+        <Route path="/organisations" element={<ManagementProtectedRoute><OrganisationPage /></ManagementProtectedRoute>} />
+        <Route path="/organisation" element={<ManagementProtectedRoute><OrganisationPage /></ManagementProtectedRoute>} />
+        <Route path="/organisations/:organisationId" element={<ManagementProtectedRoute><OrganisationPage /></ManagementProtectedRoute>} />
+        <Route path="/organisation/:organisationId" element={<ManagementProtectedRoute><OrganisationPage /></ManagementProtectedRoute>} />
+        <Route path="/sessions/:roomId" element={<ReportProtectedRoute><SessionReportPage /></ReportProtectedRoute>} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/access-denied" element={<AccessDeniedPage />} />
         <Route
@@ -155,9 +166,19 @@ const AppRoutes = ({ isAuthenticated }) => {
             <HostProtectedRoute><RoomPage role="host" /></HostProtectedRoute>
           }
         />
-      </Routes>
+      <Route path="*" element={<main className="access-screen"><div className="access-card"><h1>Page not found</h1><p>This page may have moved.</p><Link to="/">Back to my sessions</Link></div></main>} />
+      </Routes></Suspense>
     </>
   );
+};
+
+const WorkspaceNavigation = () => {
+  const { access } = useAuth();
+  if (!access?.isPlatformAdmin) return null;
+  return <nav aria-label="Workspace" className="workspace-nav">
+    <Link to="/">My sessions</Link>
+    {access?.isPlatformAdmin && <Link to="/admin">Platform admin</Link>}
+  </nav>;
 };
 
 const App = () => {
@@ -171,3 +192,5 @@ const App = () => {
 export default App;
 
 
+
+AppRoutes.propTypes = { isAuthenticated: PropTypes.bool };

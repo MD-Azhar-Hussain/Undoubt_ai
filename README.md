@@ -1,165 +1,47 @@
-# Undoubt AI - Real-time Collaborative Platform
+# Undoubt
 
-A modern full-stack web application built with React and Node.js that provides real-time collaboration features using Socket.IO. The platform includes user authentication, real-time communication, and QR code functionality.
+Real-time classroom Q&A: hosts create sessions, participants join with a code or QR, ask questions and upvote shared doubts. Hosts mark questions answered and review retained session reports.
 
-## 🚀 Features
+Built with React 18, Vite, Firebase Authentication, Express, Socket.IO and Supabase PostgreSQL. The current question similarity hint uses string comparison; there is no AI answering model yet.
 
-- **Real-time Communication**: Built with Socket.IO for instant messaging and collaboration
-- **Modern Frontend**: React 18 with Vite for fast development and optimized builds
-- **Responsive Design**: Tailwind CSS for beautiful, mobile-first UI
-- **Authentication**: Firebase and Appwrite integration for secure user management
-- **QR Code Generation**: Built-in QR code functionality for easy sharing
-- **Database**: MongoDB with Mongoose ODM for data persistence
-- **Cross-platform**: CORS configured for multiple deployment environments
+## Start here
 
-## 🛠️ Tech Stack
+- [Railway + Vercel setup, environment variables and deployment checklist](DEPLOYMENT.md)
+- [Backend environment template](backend/.env.example) and [frontend environment template](frontend/.env.example)
+- [Campus Nginx configuration](deploy/nginx/undoubt.conf)
 
-### Frontend
-- **React 18** - Modern JavaScript library for building user interfaces
-- **Vite** - Next generation frontend tooling
-- **Tailwind CSS** - Utility-first CSS framework
-- **React Router DOM** - Client-side routing
-- **Socket.IO Client** - Real-time bidirectional event-based communication
-- **Axios** - HTTP client for API requests
-- **React Icons** - Popular icon library
-- **React Toastify** - Notification system
-- **QRCode.react** - QR code generation
+Use Node.js 22+. Run `npm ci` in both `backend` and `frontend`. Merge the respective `.env.example` settings into local `.env` files, then run `npm run dev` in each directory. The frontend runs on port 3108 and proxies the backend on port 6108 by default.
 
-### Backend
-- **Node.js** - JavaScript runtime
-- **Express.js** - Web framework
-- **Socket.IO** - Real-time communication
-- **MongoDB** - NoSQL database
-- **Mongoose** - MongoDB object modeling
-- **CORS** - Cross-origin resource sharing
-- **UUID** - Unique identifier generation
-- **dotenv** - Environment variable management
+Create a fresh Supabase project and Firebase project, then fill the local environment files. Run `npm run db:migrate` in `backend` to install the private PostgreSQL schema. Firebase handles authentication; Supabase stores the data. No Supabase client key is needed in the browser. See the setup guide for every required field.
 
-## 📁 Project Structure
+## Included
 
-```
-Undoubt_ai/
-├── frontend/          # React frontend application
-│   ├── src/          # Source files
-│   ├── package.json  # Frontend dependencies
-│   └── vite.config.js # Vite configuration
-├── backend/          # Node.js backend application
-│   ├── app.js        # Main server file
-│   ├── controllers/  # Socket controllers
-│   ├── routes/       # API routes
-│   └── package.json  # Backend dependencies
-└── README.md         # Project documentation
-```
+- Verified identities for HTTP requests and socket connections.
+- Server-enforced room ownership, validation and participant email privacy.
+- Atomic voting with confirmed frontend state and reconnect handling.
+- Retained closed sessions, host session history and host-only reports.
+- Bounded question queries, payload limits and basic throttling.
+- Readiness/liveness endpoints and graceful shutdown.
+- Backend integration tests, frontend interaction tests and a CI workflow.
 
-## 🚀 Getting Started
+## Verification
 
-### Prerequisites
+In `backend`: `npm test`.
 
-- Node.js (v14 or higher)
-- npm or yarn
-- MongoDB Atlas account or local MongoDB installation
+In `frontend`: `npm run lint`, `npm test`, `npm run build`.
 
-### Installation
+In both: `npm audit --omit=dev`.
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/MD-Azhar-Hussain/Undoubt_ai.git
-   cd Undoubt_ai
-   ```
+Integration tests use isolated embedded PostgreSQL (PGlite) and mock verified identities. They do not use your Supabase database or real Firebase accounts. Hosted connection/TLS and true multi-connection concurrency still require verification against your new Supabase project.
 
-2. **Setup Backend**
-   ```bash
-   cd backend
-   npm install
-   ```
+## Readiness
 
-3. **Setup Frontend**
-   ```bash
-   cd ../frontend
-   npm install
-   ```
+This is a single-process pilot foundation. Production credentials, real-account testing, legacy-data review, operational monitoring and load testing are still required. Multi-instance deployment needs shared Socket.IO infrastructure and shared rate limits.
 
-4. **Environment Configuration**
-   
-   Create a `.env` file in the backend directory:
-   ```env
-   MONGO_URI=your_mongodb_connection_string
-   PORT=3000
-   ```
+The additive organisation schema has been applied to the configured Supabase database. No production application deployment or legacy MongoDB import is included.
 
-### Running the Application
+## Author
 
-1. **Start the Backend Server**
-   ```bash
-   cd backend
-   npm run dev
-   ```
+MD Azhar Hussain — [GitHub](https://github.com/MD-Azhar-Hussain)
 
-2. **Start the Frontend Development Server**
-   ```bash
-   cd frontend
-   npm run dev
-   ```
-
-3. **Access the Application**
-   - Frontend: `http://localhost:5173`
-   - Backend: `http://localhost:3000`
-
-## 🌐 Deployment
-
-The application is configured for deployment on multiple platforms:
-
-### Supported Platforms
-- **Vercel** - Frontend deployment
-- **Render** - Full-stack deployment
-- **Local Development** - Complete development environment
-
-### CORS Configuration
-The backend is pre-configured with CORS settings for:
-- Production URLs (Vercel, Render)
-- Development environments (localhost, LAN)
-
-## 📝 Scripts
-
-### Frontend Scripts
-```bash
-npm run dev      # Start development server
-npm run build    # Build for production
-npm run preview  # Preview production build
-npm run lint     # Run ESLint
-```
-
-### Backend Scripts
-```bash
-npm start        # Start production server
-npm run dev      # Start development server with nodemon
-npm test         # Run tests
-```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the ISC License.
-
-## 👨‍💻 Author
-
-**MD Azhar Hussain**
-- GitHub: [@MD-Azhar-Hussain](https://github.com/MD-Azhar-Hussain)
-
-## 🙏 Acknowledgments
-
-- React and Node.js communities for excellent documentation
-- Socket.IO for real-time communication capabilities
-- Tailwind CSS for the utility-first approach
-- All contributors who helped shape this project
-
----
-
-⭐ If you found this project helpful, please give it a star!
+The original project declares the ISC license.

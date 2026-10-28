@@ -1,10 +1,13 @@
 import { io } from 'socket.io-client';
-
-// Use the correct backend URL
-const SOCKET_SERVER_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 'https://undoubtai-production.up.railway.app';
-
-const socket = io(SOCKET_SERVER_URL, {
-  withCredentials: true, // Enable credentials (if needed)
+import { auth } from '../config/firebase';
+import { socketOrigin } from '../config/socketEndpoint';
+const socket = io(socketOrigin(import.meta.env.VITE_SOCKET_SERVER_URL, window.location.origin), {
+  path: '/socket.io/',
+  autoConnect: false,
+  auth: async callback => {
+    try { callback({ token: await auth.currentUser?.getIdToken() }); }
+    catch { callback({ token: null }); }
+  },
+  timeout: 10000,
 });
-
 export default socket;

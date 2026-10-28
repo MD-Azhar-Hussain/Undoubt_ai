@@ -3,14 +3,7 @@ import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut } from "firebase/auth";
 
 // Your web app's Firebase configuration
-const firebaseConfig = {
-  apiKey: "AIzaSyDipzY4cG03pJOv93qZlicTyWYlFwz1Bos",
-  authDomain: "mydigitalgun1607.firebaseapp.com",
-  projectId: "mydigitalgun1607",
-  storageBucket: "mydigitalgun1607.firebasestorage.app",
-  messagingSenderId: "309430512199",
-  appId: "1:309430512199:web:30daf6fe7397ea795e5f62"
-};
+import { firebaseConfig } from './environment';
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);

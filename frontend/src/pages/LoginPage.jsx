@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { signInWithGoogle, getGoogleRedirectResult, logOut } from '../config/firebase';
 import { isEmailAllowed } from '../utils/emailValidation';
-import { ToastContainer, toast } from 'react-toastify';
+import { toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { FaGoogle } from 'react-icons/fa';
 
@@ -24,7 +24,7 @@ const LoginPage = () => {
           if (!isEmailAllowed(userEmail)) {
             // Sign out the user immediately
             await logOut();
-            toast.error('Access denied: This website is only for VNRVJIET students and faculty.');
+            toast.error('This email is not approved for this workspace.');
             navigate('/access-denied');
             return;
           }
@@ -39,7 +39,7 @@ const LoginPage = () => {
     };
 
     checkRedirectResult();
-  }, [navigate]);
+  }, [navigate, redirectTo]);
 
   const handleGoogleSignIn = async () => {
     setLoading(true);
@@ -51,7 +51,7 @@ const LoginPage = () => {
       if (!isEmailAllowed(userEmail)) {
         // Sign out the user immediately
         await logOut();
-        toast.error('Access denied: This website is only for VNRVJIET students and faculty.');
+        toast.error('This email is not approved for this workspace.');
         navigate('/access-denied');
         return;
       }
@@ -67,7 +67,7 @@ const LoginPage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-900 via-purple-800 to-black text-white">
+    <div className="login-screen min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 text-white">
       <main className="max-w-7xl mx-auto px-4 py-8 sm:py-12">
         <div className="grid lg:grid-cols-2 gap-8 lg:gap-12 items-start lg:items-center">
           {/* Login card (kept familiar; placed first on mobile for quick access) */}
@@ -79,8 +79,8 @@ const LoginPage = () => {
                 </h1>
                 <p className="text-base sm:text-lg text-gray-300 mb-4">Welcome to UnDoubt!</p>
                 <div className="bg-blue-900/50 rounded-lg p-2 sm:p-3 border border-blue-600/70">
-                  <p className="text-xs sm:text-sm text-blue-200">🎓 For VNRVJIET Students & Faculty Only</p>
-                  <p className="text-xs text-blue-300 mt-1">Use your @vnrvjiet.in email address</p>
+                  <p className="text-xs sm:text-sm text-blue-200">🎓 For classrooms, workshops, and teams</p>
+                  <p className="text-xs text-blue-300 mt-1">Sign in with your approved Google account</p>
                 </div>
               </div>
 
@@ -94,17 +94,17 @@ const LoginPage = () => {
               </button>
 
               <div className="text-center">
-                <p className="text-xs sm:text-sm text-gray-400 mb-2">Sign in with your VNRVJIET Google account</p>
-                <p className="text-xs text-gray-500">Only @vnrvjiet.in email addresses are allowed</p>
+                <p className="text-xs sm:text-sm text-gray-400 mb-2">Sign in with your Google account</p>
+                <p className="text-xs text-gray-500">Your workspace may restrict approved email domains</p>
               </div>
             </div>
           </aside>
 
           {/* Landing content */}
-          <section className="order-2 lg:order-1">
+          <section className="login-explanation order-2 lg:order-1">
             {/* Hero */}
             <div className="mb-8 sm:mb-10">
-              <p className="inline-block text-xs sm:text-sm px-3 py-1 rounded-full bg-white/10 border border-white/20">Real-time Q&A for VNRVJIET</p>
+              <p className="inline-block text-xs sm:text-sm px-3 py-1 rounded-full bg-white/10 border border-white/20">Real-time Q&A for your classroom</p>
               <h2 className="mt-3 text-3xl sm:text-5xl font-extrabold leading-tight">
                 Clear doubts, faster.
                 <span className="block text-transparent bg-clip-text bg-gradient-to-r from-orange-400 via-yellow-300 to-pink-400">Collaborate in real-time.</span>
@@ -174,19 +174,6 @@ const LoginPage = () => {
           </section>
         </div>
       </main>
-
-      <ToastContainer
-        position="top-right"
-        autoClose={5000}
-        hideProgressBar={false}
-        newestOnTop={false}
-        closeOnClick
-        rtl={false}
-        pauseOnFocusLoss
-        draggable
-        pauseOnHover
-        theme="dark"
-      />
     </div>
   );
 };

@@ -1,0 +1,24 @@
+:root {
+  --surface: #19172c; --surface-raised: #29243e; --input: #100e20;
+  --line: #48405e; --control-line: #736884; --muted: #bcb6cf;
+  --primary: #7045cf; --primary-hover: #6038b8;
+}
+body, html { background: #100d20; }
+body { background-image: radial-gradient(ellipse at 5% 5%, #31236565, transparent 55%), radial-gradient(ellipse at 95% 50%, #201e5545, transparent 55%); background-attachment: fixed; }
+.app-nav { background: #120f22ee; border-bottom: 1px solid #51416c55; box-shadow: none; }
+.app-nav .logout-button { background: #261f38; border-color: #5f5076; }
+.workspace-nav { background: #151125; border-color: #453558; }
+.home-screen, .form-screen, .report-screen { background: transparent; }
+.home-hero { padding-top: 3rem; }
+.home-intro h1 { color: #faf6ff; }
+.home-actions button { background: linear-gradient(120deg, #44307a, #2f2450); border-color: #8f6cca88; }
+.home-actions button:last-child { background: linear-gradient(120deg, #2b3269, #242345); border-color: #6f83bc88; }
+.session-card, .form-card, .join-screen .form-card { background: var(--surface); border-color: var(--line); }
+.session-card:hover { border-color: #9c82c9; }
+.access-screen { min-height: 65vh; display: grid; place-items: center; padding: 2rem 1rem; color: #f4f0ff; }
+.access-card { width: min(100%, 30rem); padding: 2rem; border: 1px solid var(--line); background: linear-gradient(145deg, #2c2049, #181529); border-radius: 1.25rem; box-shadow: 0 20px 70px #0003; }
+.access-card h1 { font-size: 1.6rem; font-weight: 700; margin: .8rem 0; }
+.access-card p { color: #c9c2da; margin-bottom: 1.5rem; }
+.access-card button, .access-card a { display: inline-flex; align-items: center; min-height: 44px; padding: .6rem .85rem; margin-right: .5rem; border-radius: .6rem; color: #e6d6ff; }
+.access-card button { background: var(--primary); color: #fff; }
+@media(max-width: 540px) { .access-card { padding: 1.35rem; } .home-hero { padding-top: 1.5rem; } }

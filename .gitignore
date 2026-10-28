@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+coverage/
+.local-tools/
+*.log
+*service-account*.json
+docs
+/deploy/*
+!/deploy/nginx/
+!/deploy/undoubt.service
+INTERVIEW_GUIDE.md

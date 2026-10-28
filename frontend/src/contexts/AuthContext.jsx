@@ -1,10 +1,15 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import PropTypes from 'prop-types';
+import { createContext, useContext, useCallback, useEffect, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth, logOut } from '../config/firebase';
 import { isEmailAllowed } from '../utils/emailValidation';
+import http from '../utils/http';
+import useForegroundRefresh from '../hooks/useForegroundRefresh';
 
 const AuthContext = createContext();
 
+// This context hook is deliberately colocated with its provider.
+// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
@@ -16,6 +21,22 @@ export const useAuth = () => {
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [access, setAccess] = useState(null);
+  const [accessError, setAccessError] = useState('');
+  const [accessVersion, setAccessVersion] = useState(0);
+  const acceptAccess = useCallback(data => { setAccess(data); setAccessError(''); }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setAccess(null);
+    setAccessError('');
+    if (user?.id) http.get('/me', { signal: controller.signal }).then(({ data }) => { if (!controller.signal.aborted) setAccess(data); }).catch(error => {
+      if (!controller.signal.aborted) setAccessError(error.response?.data?.message || 'Could not load workspace access. Please retry.');
+    });
+    return () => controller.abort();
+  }, [user?.id, accessVersion]);
+
+  useForegroundRefresh(() => { if (user?.id) setAccessVersion(value => value + 1); });
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -54,12 +75,18 @@ export const AuthProvider = ({ children }) => {
   const value = {
     user,
     loading,
+    access,
+    accessError,
+    acceptAccess,
+    refreshAccess: () => setAccessVersion(value => value + 1),
     isAuthenticated: user?.isAuthenticated || false
   };
 
   return (
     <AuthContext.Provider value={value}>
-      {!loading && children}
+      {children}
     </AuthContext.Provider>
   );
 };
+
+AuthProvider.propTypes = { children: PropTypes.node };

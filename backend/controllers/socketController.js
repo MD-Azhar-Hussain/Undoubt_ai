@@ -1,99 +1,61 @@
-const Doubt = require('../models/Doubt');
-const Room = require('../models/Room');
-
-const handleSocketConnection = (io, socket) => {
-  console.log('New client connected');
-
-  socket.on('joinRoom', async (roomId, role, userId) => {
-    socket.join(roomId);
-    let isHost = false;
-    let topic = null;
+const { AppError, publicError } = require('../lib/security');
+module.exports = (io, socket, service, consumeAction, broadcastVote) => {
+  const user = socket.data.user;
+  // Stop delivering room data after the authentication token expires.
+  const expiryTimer = user.exp ? setTimeout(() => {
+    socket.emit('sessionExpired');
+    socket.disconnect(true);
+  }, Math.max(0, user.exp * 1000 - Date.now())) : null;
+  socket.on('disconnect', () => clearTimeout(expiryTimer));
+  const register = (event, fn) => socket.on(event, async (...args) => {
+    const ack = typeof args.at(-1) === 'function' ? args.pop() : () => {};
     try {
-      const room = await Room.findOne({ roomId });
-      if (room) {
-        topic = room.topic || null;
-        if (userId && room.hostId === userId) {
-          isHost = true;
-        }
-      }
-    } catch (e) {
-      // fall through with isHost=false
-    }
-    socket.role = isHost ? 'host' : 'participant';
-    socket.userId = userId;
-    console.log(`Client joined room: ${roomId} as ${socket.role}`);
-    // Send room metadata to the joined client
-    socket.emit('roomInfo', { roomId, topic });
-
-    // Send existing doubts to the newly joined client
-    const existingDoubts = await Doubt.find({ roomId });
-    socket.emit('existingDoubts', existingDoubts);
-  });
-
-  // Allow host to update room topic and broadcast
-  socket.on('updateRoomTopic', async (roomId, newTopic) => {
-    try {
-      const room = await Room.findOne({ roomId });
-      if (!room) return;
-      const isHost = socket.userId && room.hostId === socket.userId;
-      if (!isHost) return; // only host can update topic
-      room.topic = (typeof newTopic === 'string' ? newTopic.trim() : '');
-      await room.save();
-      io.to(roomId).emit('roomTopicUpdated', { roomId, topic: room.topic });
-    } catch (e) {
-      // ignore errors to avoid crashing
+      consumeAction(user.uid);
+      if (user.exp && Date.now() >= user.exp * 1000) throw new AppError(401, 'Session expired. Reconnect to continue.');
+      const result = await fn(...args);
+      ack({ ok: true, ...result });
+    } catch (error) {
+      const payload = { ok: false, status: error.status || 500, ...publicError(error) };
+      ack(payload);
+      socket.emit('operationError', payload);
     }
   });
-
-  socket.on('newDoubt', async (roomId, doubt) => {
-    const newDoubt = new Doubt({ ...doubt, roomId, upvotes: 0, upvotedBy: [] });
-    await newDoubt.save();
-    io.to(roomId).emit('newDoubt', newDoubt); // Broadcast to all clients in the room
+  const requireJoined = id => {
+    if (!socket.rooms.has(id)) throw new AppError(403, 'Join this room first');
+    // Every mutation checks fresh permissions inside its database transaction.
+  };
+  register('joinRoom', async id => {
+    const room = await service.joinRoom(id, user);
+    for (const joined of socket.rooms) if (joined !== socket.id) await socket.leave(joined);
+    await socket.join(id);
+    if (room.organisationId) await socket.join(`org:${room.organisationId}`);
+    const page = await service.listDoubts(id, user);
+    socket.emit('roomInfo', service.serializeRoom(room));
+    socket.emit('existingDoubts', page.doubts, page.nextCursor);
   });
-
-  socket.on('upvoteDoubt', async (roomId, doubtId, userId) => {
-    const doubt = await Doubt.findOne({ roomId, id: doubtId });
-    if (doubt && !doubt.upvotedBy.includes(userId)) {
-      doubt.upvotes += 1;
-      doubt.upvotedBy.push(userId);
-      await doubt.save();
-      io.to(roomId).emit('upvoteDoubt', doubtId); // Broadcast to all clients in the room
-    }
+  register('leaveRoom', async id => { if (typeof id === 'string' && id !== socket.id) await socket.leave(id); });
+  register('updateRoomTopic', async (id, topic) => {
+    requireJoined(id);
+    const value = await service.updateTopic(id, topic, user);
+    await service.broadcastEvent(io, id, 'roomTopicUpdated', { roomId: id, topic: value });
   });
-
-  socket.on('downvoteDoubt', async (roomId, doubtId, userId) => {
-    const doubt = await Doubt.findOne({ roomId, id: doubtId });
-    if (doubt && doubt.upvotedBy.includes(userId)) {
-      doubt.upvotes -= 1;
-      doubt.upvotedBy = doubt.upvotedBy.filter(id => id !== userId);
-      await doubt.save();
-      io.to(roomId).emit('downvoteDoubt', doubtId); // Broadcast to all clients in the room
-    }
+  register('newDoubt', async (id, input) => {
+    requireJoined(id);
+    const doubt = await service.addDoubt(id, input, user);
+    if (doubt.created) await service.broadcastDoubt(io, id, doubt);
+    return { doubt: service.serializeDoubt(doubt, user, false) };
   });
-
-  socket.on('markAsAnswered', async (roomId, doubtId) => {
-    if (socket.role !== 'host') {
-      return; // only host can toggle answered
-    }
-    const doubt = await Doubt.findOne({ roomId, id: doubtId });
-    if (doubt) {
-      doubt.answered = !doubt.answered;
-      await doubt.save();
-      io.to(roomId).emit('markAsAnswered', doubtId, doubt.answered); // Broadcast to all clients in the room
-    }
+  for (const event of ['upvoteDoubt', 'downvoteDoubt']) register(event, async (id, doubtId) => {
+    requireJoined(id);
+    const result = await service.vote(id, doubtId, user, event === 'upvoteDoubt');
+    if (result.changed) await broadcastVote(id, event, { doubtId, upvotes: result.upvotes, revision: result.revision });
+    return result;
   });
-
-  socket.on('closeRoom', async (roomId) => {
-    if (socket.role !== 'host') {
-      return; // only host can close room
-    }
-    await Doubt.deleteMany({ roomId });
-    io.to(roomId).emit('roomClosed'); // Broadcast to all clients in the room
+  register('markAsAnswered', async (id, doubtId, answer) => {
+    requireJoined(id);
+    const update = await service.markAnswered(id, doubtId, user, answer);
+    await service.broadcastEvent(io, id, 'markAsAnswered', doubtId, true, update);
+    return { update };
   });
-
-  socket.on('disconnect', () => {
-    console.log('Client disconnected');
-  });
+  register('closeRoom', async id => { requireJoined(id); await service.closeRoom(id, user, io); });
 };
-
-module.exports = handleSocketConnection;
