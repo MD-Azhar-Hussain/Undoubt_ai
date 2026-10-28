@@ -69,7 +69,8 @@ async function start() {
     try { await db.ready(); } catch { await db.close(); throw new Error('Supabase connection/schema check failed. Check settings and run npm run db:migrate.'); }
   } else console.log('Development setup mode: waiting for SUPABASE_DB_URL and FIREBASE_PROJECT_ID. Data routes return 503.');
   const { server, io } = createServer({ db });
-  server.listen(process.env.PORT || 6108, process.env.HOST || '0.0.0.0', () => console.log(`Undoubt API listening on ${process.env.PORT || 6108}${configured ? '' : ' (setup incomplete)'}`));
+  //It was 6108 port number for Local testing 
+  server.listen(process.env.PORT || 8080, process.env.HOST || '0.0.0.0', () => console.log(`Undoubt API listening on ${process.env.PORT || 8080}${configured ? '' : ' (setup incomplete)'}`));
   let stopping = false;
   const shutdown = () => {
     if (stopping) return;
