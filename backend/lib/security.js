@@ -1,6 +1,8 @@
 const { getApps, initializeApp } = require('firebase-admin/app');
 const { firebaseCredential } = require('./credentials');
 const { getAuth } = require('firebase-admin/auth');
+const { singleFlight } = require('./singleFlight');
+const verifyIdentity = singleFlight(token => getAuth().verifyIdToken(token, true));
 class AppError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
@@ -25,7 +27,7 @@ async function verifyToken(token) {
   if (!process.env.FIREBASE_PROJECT_ID) throw new AppError(503, 'Firebase project is not configured');
   if (!getApps().length) initializeApp({ credential: firebaseCredential(), projectId: process.env.FIREBASE_PROJECT_ID });
   let user;
-  try { user = await getAuth().verifyIdToken(token, true); }
+  try { user = await verifyIdentity(token); }
   catch { throw new AppError(401, 'Your session expired. Please sign in again.'); }
   const domains = (process.env.ALLOWED_EMAIL_DOMAINS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
   if (!user.email || !user.email_verified || (domains.length && !domains.includes(user.email.split('@')[1].toLowerCase()))) throw new AppError(403, 'This account is not allowed to access this workspace');

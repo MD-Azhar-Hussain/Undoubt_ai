@@ -10,6 +10,34 @@ const { createServer } = require('../app');
 const { createActionBudget } = require('../lib/actionBudget');
 const { AppError } = require('../lib/security');
 
+test('personal room actions stay within the remote query budget and keep votes idempotent', async () => {
+  const engine = new PGlite();
+  try {
+    await engine.exec(readFileSync(join(__dirname, '../db/schema.sql'), 'utf8'));
+    let queries = 0;
+    const wrap = client => ({ query: (sql, args) => { queries++; return client.query(sql, args); } });
+    const db = { ...wrap(engine), transaction: fn => engine.transaction(client => fn(wrap(client))) };
+    const service = require('../services/rooms')(db);
+    const user = identity('test-query-budget');
+    const room = await service.createRoom(user, 'Budget');
+    queries = 0;
+    const question = await service.addDoubt(room.roomId, { text: 'Question' }, user);
+    assert.equal(queries, 2, 'authorization and question/member writes use two statements, excluding BEGIN/COMMIT');
+    queries = 0;
+    const vote = await service.vote(room.roomId, question.id, user, true);
+    assert.equal(queries, 3, 'room authorization, question lock, atomic vote/count update');
+    assert.equal(vote.upvotes, 1);
+    assert.equal((await service.vote(room.roomId, question.id, user, true)).changed, false);
+    assert.equal((await service.vote(room.roomId, question.id, user, false)).upvotes, 0);
+    assert.equal((await service.vote(room.roomId, question.id, user, false)).changed, false);
+    queries = 0;
+    const access = await require('../services/access')(db).me(user);
+    assert.equal(queries, 1);
+    assert.deepEqual(access.organisations, []);
+    assert.equal(access.isPlatformAdmin, false);
+  } finally { await engine.close(); }
+});
+
 let engine, db, app, server, io, rooms;
 const sockets = [];
 const identity = uid => ({ uid, email: `${uid}@example.invalid`, email_verified: true });

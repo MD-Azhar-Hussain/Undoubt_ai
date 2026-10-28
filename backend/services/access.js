@@ -31,8 +31,10 @@ module.exports = function createAccessService(db) {
     const { rows } = await client.query(`SELECT * FROM undoubt.organisations WHERE id=$1${lock === 'share' ? ' FOR SHARE' : lock ? ' FOR UPDATE' : ''}`, [id]);
     const organisation = rows[0];
     if (!organisation) throw new AppError(404, 'Organisation not found');
-    const platform = await isPlatformAdmin(user, client);
-    const member = (await client.query("SELECT role FROM undoubt.organisation_members WHERE organisation_id=$1 AND user_id=$2 AND status='active' AND (expires_at IS NULL OR expires_at>now())", [id, user.uid])).rows[0];
+    const permission = (await client.query(`SELECT EXISTS(SELECT 1 FROM undoubt.platform_admins WHERE user_id=$2) AS platform,
+      (SELECT role FROM undoubt.organisation_members WHERE organisation_id=$1 AND user_id=$2 AND status='active' AND (expires_at IS NULL OR expires_at>now())) AS role`, [id, user.uid])).rows[0];
+    const platform = permission.platform;
+    const member = permission.role ? { role: permission.role } : null;
     if (!platform && organisation.status === 'deleted') throw new AppError(404, 'Organisation not found');
     if (!platform && !member) throw new AppError(404, 'Organisation not found');
     if (!platform && roles.length && !roles.includes(member.role)) throw new AppError(403, 'Organisation administrator access required');
@@ -40,9 +42,13 @@ module.exports = function createAccessService(db) {
     return { organisation, role: platform ? 'platform_admin' : member.role, platform };
   }
   async function me(user) {
-    const { rows } = await db.query(`SELECT o.id,o.name,o.slug,o.status,m.role FROM undoubt.organisation_members m
-      JOIN undoubt.organisations o ON o.id=m.organisation_id WHERE o.status<>'deleted' AND m.user_id=$1 AND m.status='active' AND (m.expires_at IS NULL OR m.expires_at>now()) ORDER BY o.name LIMIT 100`, [user.uid]);
-    return { isPlatformAdmin: await isPlatformAdmin(user), organisations: rows, personalRoomsAllowed: process.env.ALLOW_PERSONAL_ROOMS !== 'false' };
+    const { rows } = await db.query(`SELECT EXISTS(SELECT 1 FROM undoubt.platform_admins WHERE user_id=$1) AS platform,
+      COALESCE((SELECT json_agg(memberships) FROM (
+        SELECT o.id,o.name,o.slug,o.status,m.role FROM undoubt.organisation_members m
+        JOIN undoubt.organisations o ON o.id=m.organisation_id WHERE o.status<>'deleted' AND m.user_id=$1 AND m.status='active'
+        AND (m.expires_at IS NULL OR m.expires_at>now()) ORDER BY o.name LIMIT 100
+      ) memberships), '[]'::json) AS organisations`, [user.uid]);
+    return { isPlatformAdmin: rows[0].platform, organisations: rows[0].organisations, personalRoomsAllowed: process.env.ALLOW_PERSONAL_ROOMS !== 'false' };
   }
   async function listOrganisations(user, after) {
     await requirePlatform(user);

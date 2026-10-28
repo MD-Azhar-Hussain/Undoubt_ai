@@ -1,4 +1,5 @@
 const { AppError, publicError } = require('../lib/security');
+const { socketPerformance } = require('../lib/performance');
 module.exports = (io, socket, service, consumeAction, broadcastVote) => {
   const user = socket.data.user;
   // Stop delivering room data after the authentication token expires.
@@ -12,7 +13,7 @@ module.exports = (io, socket, service, consumeAction, broadcastVote) => {
     try {
       consumeAction(user.uid);
       if (user.exp && Date.now() >= user.exp * 1000) throw new AppError(401, 'Session expired. Reconnect to continue.');
-      const result = await fn(...args);
+      const result = await socketPerformance(event, () => fn(...args));
       ack({ ok: true, ...result });
     } catch (error) {
       const payload = { ok: false, status: error.status || 500, ...publicError(error) };

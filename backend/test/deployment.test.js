@@ -19,17 +19,17 @@ test('a room vote batch checks its audience once and never queries empty rooms',
   const sent = [];
   const db = { query: async sql => {
     queries++;
-    return { rows: sql.includes('undoubt.rooms') ? [{ host_id: 'host', organisation_id: null }] : [] };
+    return { rows: sql.includes('undoubt.rooms') ? [{ user_id: 'member', manager: false }] : [] };
   } };
   const service = require('../services/rooms')(db);
   let recipients = [{ id: 'socket-1', data: { user: { uid: 'member' } } }];
   const io = { in: () => ({ fetchSockets: async () => recipients }), to: ids => ({ emit: (...args) => sent.push({ ids, args }) }) };
   const events = Array.from({ length: 50 }, (_, i) => ({ event: 'upvoteDoubt', args: [{ doubtId: `q-${i}`, upvotes: 1, revision: 1 }] }));
   await service.broadcastEvents(io, '123456', events);
-  assert.equal(queries, 2);
+  assert.equal(queries, 1);
   assert.equal(sent.length, 50);
   assert.deepEqual(sent[0].ids, ['socket-1']);
   recipients = [];
   await service.broadcastEvents(io, '123456', events);
-  assert.equal(queries, 2);
+  assert.equal(queries, 1);
 });

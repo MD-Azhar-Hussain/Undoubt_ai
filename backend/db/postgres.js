@@ -1,5 +1,6 @@
 const { Pool } = require('pg');
 const { databaseCA } = require('../lib/credentials');
+const { measure } = require('../lib/performance');
 
 function createDatabase(env = process.env) {
   const invalid = message => Object.assign(new Error(message), { code: 'DB_CONFIG' });
@@ -23,19 +24,20 @@ function createDatabase(env = process.env) {
   });
   pool.on('error', () => console.error('Database pool connection failed'));
   return {
-    query: (sql, params) => pool.query(sql, params),
+    query: (sql, params) => measure('dbMs', () => pool.query(sql, params)),
     async transaction(work) {
-      const client = await pool.connect();
+      const client = await measure('poolMs', () => pool.connect());
+      const query = (sql, params) => measure('dbMs', () => client.query(sql, params));
       try {
-        await client.query('BEGIN');
-        const result = await work(client);
-        await client.query('COMMIT');
+        await query('BEGIN');
+        const result = await work({ query });
+        await query('COMMIT');
         return result;
-      } catch (error) { await client.query('ROLLBACK'); throw error; }
+      } catch (error) { await query('ROLLBACK'); throw error; }
       finally { client.release(); }
     },
     async ready() {
-      await pool.query('SELECT r.organisation_id, o.id, m.user_id, m.expires_at, p.user_id, a.id FROM undoubt.rooms r, undoubt.organisations o, undoubt.organisation_members m, undoubt.platform_admins p, undoubt.audit_events a LIMIT 0');
+      await measure('dbMs', () => pool.query('SELECT r.organisation_id, o.id, m.user_id, m.expires_at, p.user_id, a.id FROM undoubt.rooms r, undoubt.organisations o, undoubt.organisation_members m, undoubt.platform_admins p, undoubt.audit_events a LIMIT 0'));
       return true;
     },
     close: () => pool.end(),

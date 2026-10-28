@@ -10,6 +10,8 @@ const { verifyToken, originAllowed, asyncRoute, publicError, AppError } = requir
 const { createActionBudget } = require('./lib/actionBudget');
 const { createVoteBroadcasts } = require('./lib/voteBroadcasts');
 const { validateDeployment } = require('./lib/deployment');
+const { railwayRateKey } = require('./lib/networkRateKey');
+const { measure, httpPerformance, socketPerformance } = require('./lib/performance');
 function createServer({ verify = verifyToken, db = createDatabase() } = {}) {
   const access = require('./services/access')(db);
   const service = require('./services/rooms')(db);
@@ -18,11 +20,11 @@ function createServer({ verify = verifyToken, db = createDatabase() } = {}) {
   app.disable('x-powered-by');
   if (process.env.TRUST_PROXY_HOPS) app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS));
   const server = http.createServer(app);
-  const corsOptions = { origin: (origin, cb) => cb(originAllowed(origin) ? null : new AppError(403, 'Origin not allowed'), true) };
+  const corsOptions = { maxAge: 600, origin: (origin, cb) => cb(originAllowed(origin) ? null : new AppError(403, 'Origin not allowed'), true) };
   const io = new Server(server, { cors: corsOptions, maxHttpBufferSize: 16384,
     allowRequest: (req, cb) => cb(null, originAllowed(req.headers.origin)) });
   const broadcastVote = createVoteBroadcasts((id, events) => service.broadcastEvents(io, id, events));
-  app.use(helmet(), cors(corsOptions), express.json({ limit: '16kb' }));
+  app.use(httpPerformance, helmet(), cors(corsOptions), express.json({ limit: '16kb' }));
   app.get('/health/live', (req, res) => res.json({ status: 'ok' }));
   app.get('/health/ready', async (req, res) => {
     try { await db.ready(); res.json({ ready: true }); }
@@ -32,11 +34,12 @@ function createServer({ verify = verifyToken, db = createDatabase() } = {}) {
   // must not consume one another's normal allowance.
   const rateOptions = { windowMs: 60000, standardHeaders: 'draft-7', legacyHeaders: false,
     message: { message: 'Too many requests. Please wait a moment.' } };
-  app.use('/api', rateLimit({ ...rateOptions, limit: 3000 }));
+  const networkKey = railwayRateKey();
+  app.use('/api', rateLimit({ ...rateOptions, limit: 3000, ...(networkKey ? { keyGenerator: networkKey } : {}) }));
   app.use('/api', asyncRoute(async (req, res, next) => {
     const bearer = /^Bearer ([^\s]+)$/i.exec(req.headers.authorization || '');
     if (!bearer) throw new AppError(401, 'Sign in to continue');
-    req.user = await verify(bearer[1]);
+    req.user = await measure('authMs', () => verify(bearer[1]));
     res.set('Cache-Control', 'no-store');
     next();
   }), rateLimit({ ...rateOptions, limit: 120, keyGenerator: req => req.user.uid }), asyncRoute(async (req, res, next) => {
@@ -52,7 +55,13 @@ function createServer({ verify = verifyToken, db = createDatabase() } = {}) {
     res.status(error.status || 500).json(publicError(error));
   });
   io.use(async (socket, next) => {
-    try { socket.data.user = await verify(socket.handshake.auth?.token); await access.claimMemberships(socket.data.user); next(); }
+    try {
+      await socketPerformance('authenticate', async () => {
+        socket.data.user = await measure('authMs', () => verify(socket.handshake.auth?.token));
+        await access.claimMemberships(socket.data.user);
+      });
+      next();
+    }
     catch (error) { next(new Error(publicError(error).message)); }
   });
   io.on('connection', socket => require('./controllers/socketController')(io, socket, service, consumeSocketAction, broadcastVote));

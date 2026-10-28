@@ -29,7 +29,7 @@ const JoinRoomPage = () => {
         if (typeof topic === 'string' && topic.trim()) {
           try { localStorage.setItem(`roomName:${code}`, topic.trim()); } catch { /* Storage may be unavailable. */ }
         }
-        navigate(`/room/${code}`);
+        navigate(`/${response.data.room?.canManage ? 'host' : 'room'}/${code}`);
       } else {
         setErrorMessage('Room not found. Check the code with your host.');
       }

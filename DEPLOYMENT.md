@@ -36,6 +36,9 @@ Optional settings:
 | `SUPABASE_DB_CA_CERT` | Paste the entire PEM certificate if required for database TLS. Actual newlines or literal `\n` are accepted. |
 | `SUPABASE_DB_CA_FILE` | Alternative to inline PEM: absolute path to a mounted certificate on the deployment host. Do not set both CA options. |
 | `TRUST_PROXY_HOPS` | Set only after verifying the proxy chain. Use `1` for exactly one trusted proxy with no shorter public route to the application. Incorrect values can break or weaken IP-based limits. |
+| `PERFORMANCE_LOGS` | Set `true` temporarily to log HTTP/socket action time, database time/query count, transaction pool wait and Firebase verification time. Turn off after diagnosis to reduce log volume. |
+
+On Railway public HTTP ingress, the application detects Railway's project/environment variables and uses the documented `X-Real-IP` header for the network rate-limit key, including IPv6 subnet grouping. It does not trust client-supplied `X-Forwarded-For` chains. You do not need to guess `TRUST_PROXY_HOPS` to fix rate limiting there. This assumes traffic reaches the service through Railway's HTTP edge; do not expose the same application through a raw TCP proxy or an untrusted private ingress. Self-hosted Nginx deployments still require the correct `TRUST_PROXY_HOPS`. See [Railway request headers](https://docs.railway.com/networking/public-networking/specs-and-limits).
 
 An empty `ALLOWED_EMAIL_DOMAINS` permits any verified email, including the requested Gmail administrator accounts. To restrict access, use comma-separated domains and match the frontend setting. `ALLOWED_ORIGINS` is a comma-separated list of exact frontend origins, without paths or trailing slashes; do not use a wildcard. Set `ALLOW_PERSONAL_ROOMS=false` if all new sessions must belong to organisations.
 
@@ -90,3 +93,15 @@ This release supports one backend process. Multiple replicas or PM2 cluster work
 - Frontend: `npm ci`, `npm test`, `npm run lint`, `npm run build`, `npm audit --omit=dev`.
 - Retain the last working deployment and its configuration. Roll back application releases through the hosting dashboard; review schema compatibility first. Do not undo database migrations by deleting production tables.
 - Do not upload `.env`, private credential files, `node_modules`, or local `dist` output to Git. The hosts install dependencies and build from the lockfiles.
+
+## 7. Diagnosing latency
+
+Keep the backend and database geographically close. The reported deployment uses Railway Singapore and Supabase Mumbai; every serial database round trip crosses regions. Vercel serves this application's static frontend; moving a Vercel function region does not shorten the browser's direct requests to Railway. Review both providers' available regions and migration/backup procedures before moving an existing database.
+
+Enable `PERFORMANCE_LOGS=true` on Railway for a short observation window. Compare `totalMs`, `dbMs`, `dbQueries`, `authMs`, and `poolMs` for a room join, question and vote. `dbMs` includes database network/lock time, and for non-transaction queries also pool waiting. It is not pure SQL execution time. Batched broadcast queries are attributed to the event that schedules the batch; other waiting votes include that wait in total time. HTTP finish times exclude browser/edge transit; comparing these with browser Network timings separates server work from network delay. Logs omit user IDs, room IDs, tokens and question contents. Firebase revocation checks remain enabled; concurrent checks of the identical token share work only until completion.
+
+The client tries WebSockets first and falls back to polling. This avoids initial polling round trips when WebSockets work; a network that silently blocks WebSockets can take longer to detect failure. Confirm the active transport in browser DevTools. A multi-minute socket entry is a connection lifetime, not necessarily a multi-minute request computation. Status `0` does not identify a cause; inspect disconnect reasons. A `499` commonly means the client/proxy abandoned a request and is not enough by itself to prove backend failure.
+
+The API caches successful CORS preflight permission for ten minutes. Every actual request still enforces the allowed origin, Firebase verification and current access rights. Question/vote writes remain transactional; closed-room and organisation permissions are checked in the database, not cached client-side. Performance tests use isolated PGlite; production latency and independent PostgreSQL connection lock contention must still be measured on staging.
+
+Verified optimization comparison (isolated database, one personal-room participant, including transaction BEGIN/COMMIT and delivery permission lookup): a new question fell from 8 to 5 database round trips; a changed vote from 9 to 6. These counts are not a measured percentage improvement in production response time. Ordinary question actions now take shared room locks and lock the individual question when necessary; closing the session and changing its topic retain exclusive room locks.

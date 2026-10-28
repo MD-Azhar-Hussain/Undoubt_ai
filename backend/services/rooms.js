@@ -7,20 +7,23 @@ module.exports = function createRoomService(db, { generateCode = () => String(ra
   const serializeDoubt = (d, user, isHost) => ({ id: d.id, text: d.text, user: isHost ? d.user_email : 'Participant',
     isOwn: d.user_id === user.uid, answer: d.answer, answeredAt: d.answered_at, upvotes: d.upvotes, answered: d.answered, createdAt: d.created_at, revision: d.revision, upvotedBy: d.voted ? [user.uid] : [] });
   async function getRoom(id, user, hostOnly = false, allowClosed = false, client = db, lock = false) {
-    const { rows } = await client.query(`SELECT * FROM undoubt.rooms WHERE room_id = $1${lock ? ' FOR UPDATE' : ''}`, [roomCode(id)]);
+    const { rows } = await client.query(`SELECT r.*, EXISTS(SELECT 1 FROM undoubt.platform_admins WHERE user_id=$2) AS platform
+      FROM undoubt.rooms r WHERE room_id = $1${lock === 'share' ? ' FOR SHARE OF r' : lock ? ' FOR UPDATE OF r' : ''}`, [roomCode(id), user.uid]);
     if (!rows[0]) throw new AppError(404, 'Room not found');
     const room = roomView(rows[0]);
     const permissions = room.organisationId
       ? await access.requireOrganisation(room.organisationId, user, [], client, lock ? 'share' : false)
-      : { platform: await access.isPlatformAdmin(user, client), role: 'host' };
+      : { platform: rows[0].platform, role: 'host' };
     room.canManage = permissions.platform || permissions.role === 'admin' || (room.hostId === user.uid && permissions.role === 'host');
     if (hostOnly && !room.canManage) throw new AppError(403, 'Only this room’s host can do that');
     if (!allowClosed && room.status === 'closed') throw new AppError(410, 'This room is closed');
     return room;
   }
-  async function mutate(id, user, hostOnly, work, allowClosed = false) {
+  async function mutate(id, user, hostOnly, work, allowClosed = false, roomLock = 'share') {
     return db.transaction(async client => {
-      const room = await getRoom(id, user, hostOnly, allowClosed, client, true);
+      // Questions lock their own row. Shared room locks allow independent actions
+      // concurrently, while closure/topic changes still acquire an exclusive lock.
+      const room = await getRoom(id, user, hostOnly, allowClosed, client, roomLock);
       return work(client, room);
     });
   }
@@ -86,8 +89,10 @@ module.exports = function createRoomService(db, { generateCode = () => String(ra
       qid = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
     }
     return mutate(id, user, false, async client => {
-      await client.query('INSERT INTO undoubt.room_members(room_id,user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [id, user.uid]);
-      const { rows } = await client.query('INSERT INTO undoubt.questions(id, room_id, text, user_id, user_email) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING RETURNING *', [qid, id, value, user.uid, user.email]);
+      const { rows } = await client.query(`WITH membership AS (
+        INSERT INTO undoubt.room_members(room_id,user_id) VALUES ($2,$4) ON CONFLICT DO NOTHING)
+        INSERT INTO undoubt.questions(id, room_id, text, user_id, user_email) VALUES ($1,$2,$3,$4,$5)
+        ON CONFLICT (id) DO NOTHING RETURNING *`, [qid, id, value, user.uid, user.email]);
       if (rows[0]) return { ...rows[0], created: true };
       const existing = (await client.query('SELECT * FROM undoubt.questions WHERE id=$1 AND room_id=$2 AND user_id=$3', [qid, id, user.uid])).rows[0];
       if (!existing || existing.text !== value) throw new AppError(409, 'This submission was already used for a different question.');
@@ -103,14 +108,13 @@ module.exports = function createRoomService(db, { generateCode = () => String(ra
     return mutate(id, user, false, async client => {
       const { rows } = await client.query('SELECT * FROM undoubt.questions WHERE room_id=$1 AND id=$2 FOR UPDATE', [id, qid]);
       if (!rows[0]) throw new AppError(404, 'Question not found');
-      const changed = add
-        ? await client.query('INSERT INTO undoubt.votes(question_id,user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING question_id', [qid, user.uid])
-        : await client.query('DELETE FROM undoubt.votes WHERE question_id=$1 AND user_id=$2 RETURNING question_id', [qid, user.uid]);
-      let current = rows[0];
-      if (changed.rows.length) {
-        const result = await client.query('UPDATE undoubt.questions SET upvotes=upvotes+$2, revision=revision+1 WHERE id=$1 RETURNING *', [qid, add ? 1 : -1]);
-        current = result.rows[0];
-      }
+      const mutation = add
+        ? 'INSERT INTO undoubt.votes(question_id,user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING question_id'
+        : 'DELETE FROM undoubt.votes WHERE question_id=$1 AND user_id=$2 RETURNING question_id';
+      const changed = await client.query(`WITH changed AS (${mutation})
+        UPDATE undoubt.questions SET upvotes=upvotes+$3, revision=revision+1
+        WHERE id=$1 AND EXISTS(SELECT 1 FROM changed) RETURNING upvotes,revision`, [qid, user.uid, add ? 1 : -1]);
+      const current = changed.rows[0] || rows[0];
       return { voted: add, upvotes: current.upvotes, revision: current.revision, changed: !!changed.rows.length };
     });
   }
@@ -131,14 +135,14 @@ module.exports = function createRoomService(db, { generateCode = () => String(ra
     await mutate(id, user, true, async (client, room) => {
       await client.query('UPDATE undoubt.rooms SET topic=$2 WHERE room_id=$1', [id, value]);
       await access.audit(client, user, room.organisationId, 'session.topic_updated', id);
-    });
+    }, false, true);
     return value;
   }
   async function closeRoom(id, user, io) {
     await mutate(id, user, true, async (client, room) => {
       await client.query("UPDATE undoubt.rooms SET status='closed', closed_at=COALESCE(closed_at,now()) WHERE room_id=$1", [id]);
       await access.audit(client, user, room.organisationId, 'session.closed', id);
-    }, true);
+    }, true, true);
     await broadcastEvent(io, id, 'roomClosed');
   }
   async function report(id, user, before) {
@@ -149,22 +153,18 @@ module.exports = function createRoomService(db, { generateCode = () => String(ra
   async function audience(io, id) {
     const sockets = await io.in(id).fetchSockets();
     if (!sockets.length) return [];
-    const room = (await db.query('SELECT * FROM undoubt.rooms WHERE room_id=$1', [id])).rows[0];
-    if (!room) return [];
     const ids = [...new Set(sockets.map(socket => socket.data.user.uid))];
     if (!ids.length) return [];
-    if (!room.organisation_id) {
-      const { rows } = await db.query('SELECT user_id FROM undoubt.platform_admins WHERE user_id=ANY($1::text[])', [ids]);
-      const admins = new Set(rows.map(row => row.user_id));
-      return sockets.map(socket => ({ socket, manager: socket.data.user.uid === room.host_id || admins.has(socket.data.user.uid) }));
-    }
-    const { rows } = await db.query(`SELECT m.user_id,m.role FROM undoubt.organisation_members m JOIN undoubt.organisations o ON o.id=m.organisation_id
-      WHERE m.organisation_id=$1 AND m.user_id=ANY($2::text[]) AND m.status='active' AND (m.expires_at IS NULL OR m.expires_at>now()) AND o.status='active'
-      UNION ALL SELECT p.user_id,'platform_admin' AS role FROM undoubt.platform_admins p
-      WHERE p.user_id=ANY($2::text[]) AND EXISTS(SELECT 1 FROM undoubt.organisations o WHERE o.id=$1 AND o.status='active')`, [room.organisation_id, ids]);
-    const roles = new Map(rows.map(row => [row.user_id, row.role]));
-    return sockets.filter(socket => roles.has(socket.data.user.uid)).map(socket => ({ socket,
-      manager: ['admin','platform_admin'].includes(roles.get(socket.data.user.uid)) || (socket.data.user.uid === room.host_id && roles.get(socket.data.user.uid) === 'host') }));
+    const { rows } = await db.query(`SELECT u.user_id,
+      (p.user_id IS NOT NULL OR m.role='admin' OR (r.host_id=u.user_id AND (r.organisation_id IS NULL OR m.role='host'))) AS manager
+      FROM undoubt.rooms r CROSS JOIN unnest($2::text[]) AS u(user_id)
+      LEFT JOIN undoubt.organisations o ON o.id=r.organisation_id
+      LEFT JOIN undoubt.platform_admins p ON p.user_id=u.user_id
+      LEFT JOIN undoubt.organisation_members m ON m.organisation_id=o.id AND m.user_id=u.user_id
+        AND m.status='active' AND (m.expires_at IS NULL OR m.expires_at>now())
+      WHERE r.room_id=$1 AND (r.organisation_id IS NULL OR (o.status='active' AND (p.user_id IS NOT NULL OR m.user_id IS NOT NULL)))`, [id, ids]);
+    const managers = new Map(rows.map(row => [row.user_id, !!row.manager]));
+    return sockets.filter(socket => managers.has(socket.data.user.uid)).map(socket => ({ socket, manager: managers.get(socket.data.user.uid) }));
   }
   async function broadcastEvent(io, id, event, ...args) {
     return broadcastEvents(io, id, [{ event, args }]);

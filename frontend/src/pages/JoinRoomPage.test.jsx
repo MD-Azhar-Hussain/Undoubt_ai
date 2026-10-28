@@ -7,9 +7,17 @@ vi.mock('../utils/http', () => ({ default: { get: vi.fn() } }));
 beforeEach(() => vi.clearAllMocks());
 afterEach(cleanup);
 function mount() {
-  render(<MemoryRouter initialEntries={['/join-room']}><Routes><Route path="/join-room" element={<JoinRoomPage />} /><Route path="/room/:roomId" element={<p>Room opened</p>} /></Routes></MemoryRouter>);
+  render(<MemoryRouter initialEntries={['/join-room']}><Routes><Route path="/join-room" element={<JoinRoomPage />} /><Route path="/room/:roomId" element={<p>Room opened</p>} /><Route path="/host/:roomId" element={<p>Host opened</p>} /></Routes></MemoryRouter>);
 }
 describe('joining without retyping room links', () => {
+  it('takes a verified manager directly to the host gate without a participant redirect', async () => {
+    http.get.mockResolvedValue({ data: { exists: true, room: { canManage: true } } });
+    mount();
+    fireEvent.change(screen.getByLabelText('Room code'), { target: { value: '482916' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Join Room' }));
+    await screen.findByText('Host opened');
+    expect(http.get).toHaveBeenCalledTimes(1);
+  });
   it.each(['482 916', '482-916', '482916', `${window.location.origin}/room/482916`, `${window.location.origin}/join-room/482916?from=share`])('accepts %s', async value => {
     http.get.mockResolvedValue({ data: { exists: true, room: {} } });
     mount();
