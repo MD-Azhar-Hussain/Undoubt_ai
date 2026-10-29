@@ -6,7 +6,6 @@ import { AiFillStar, AiOutlineStar } from 'react-icons/ai';
 const DoubtCard = ({
   doubt,
   isAnswered = false,
-  isExiting = false,
   upvotedDoubts,
   role,
   visibleEmails,
@@ -51,9 +50,7 @@ const DoubtCard = ({
         isAnswered
           ? 'bg-emerald-900/30 border border-emerald-400/30'
           : 'bg-gray-900/50 border border-blue-500/30'
-      } ${isAnswered && recentlyAnswered.has(doubt.id) ? 'doubt-slide-in answered-sweep' : ''} ${
-        !isAnswered && isExiting ? 'doubt-slide-out-left' : ''
-      }`}
+      } ${isAnswered && recentlyAnswered.has(doubt.id) ? 'doubt-slide-in answered-sweep' : ''}`}
     >
       <div className="flex items-start justify-between">
         <div className="flex-1 min-w-0">
@@ -133,10 +130,10 @@ const DoubtCard = ({
               )}
             </div>
           </div>
-          {doubt.answer && <div className="host-reply mt-4 border-l-2 border-emerald-400 bg-emerald-950/40 rounded-r-lg p-4">
-            <p className="text-sm font-semibold text-emerald-200">Host reply</p>
-            <p className="reply-text mt-2 whitespace-pre-wrap break-words text-gray-100">{doubt.answer}</p>
-            {doubt.answeredAt && <p className="text-xs text-gray-300 mt-2">Updated {new Date(doubt.answeredAt).toLocaleString()}</p>}
+          {(doubt.answer || saving) && <div className="host-reply mt-4 border-l-2 border-emerald-400 bg-emerald-950/40 rounded-r-lg p-4" aria-busy={saving}>
+            <p className="text-sm font-semibold text-emerald-200">{saving ? 'Sending reply…' : 'Host reply'}</p>
+            <p className="reply-text mt-2 whitespace-pre-wrap break-words text-gray-100">{saving ? reply : doubt.answer}</p>
+            {!saving && doubt.answeredAt && <p className="text-xs text-gray-300 mt-2">Updated {new Date(doubt.answeredAt).toLocaleString()}</p>}
           </div>}
           {editing && <form onSubmit={saveReply} className="mt-4 space-y-3">
             <label htmlFor={`reply-${doubt.id}`} className="block text-sm font-medium">Your reply</label>
@@ -154,5 +151,5 @@ const DoubtCard = ({
 export default DoubtCard;
 
 DoubtCard.propTypes = { doubt: PropTypes.shape({ id: PropTypes.string, text: PropTypes.string, user: PropTypes.string, upvotes: PropTypes.number, isOwn: PropTypes.bool, answer: PropTypes.string, answeredAt: PropTypes.string }).isRequired,
- isAnswered: PropTypes.bool, isExiting: PropTypes.bool, upvotedDoubts: PropTypes.instanceOf(Set).isRequired, role: PropTypes.string, visibleEmails: PropTypes.instanceOf(Set).isRequired, recentlyAnswered: PropTypes.instanceOf(Set).isRequired,
+ isAnswered: PropTypes.bool, upvotedDoubts: PropTypes.instanceOf(Set).isRequired, role: PropTypes.string, visibleEmails: PropTypes.instanceOf(Set).isRequired, recentlyAnswered: PropTypes.instanceOf(Set).isRequired,
  onToggleEmailVisibility: PropTypes.func, onMarkAsAnswered: PropTypes.func, onToggleUpvote: PropTypes.func, onReply: PropTypes.func, connected: PropTypes.bool, closed: PropTypes.bool, voting: PropTypes.bool, answering: PropTypes.bool };

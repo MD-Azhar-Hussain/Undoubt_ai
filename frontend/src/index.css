@@ -26,15 +26,6 @@ textarea { font-size: 16px; }
   animation: doubtSlideIn 0.6s ease-out both;
 }
 
-@keyframes doubtSlideOutLeft {
-  0% { opacity: 1; transform: translateX(0); }
-  100% { opacity: 0; transform: translateX(-12px); }
-}
-
-.doubt-slide-out-left {
-  animation: doubtSlideOutLeft 0.25s ease-in both;
-}
-
 /* Subtle green sweep when becoming answered */
 @keyframes answerSweep {
   from { background-position: 100% 0; }

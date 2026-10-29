@@ -106,6 +106,27 @@ This release supports one backend process. Multiple replicas or PM2 cluster work
 
 ## 7. Diagnosing latency
 
+### Room interaction changes
+
+The join form opens the room directly; socket authorization supplies access, role, topic and questions. Initial joins authorize once and combine membership recording with the first question page. Shared room locks allow simultaneous joins and actions while preserving closure and organisation revocation checks. Reconnecting within one minute does not rewrite the same history timestamp.
+
+Questions, votes and replies acknowledge after the database commit, before audience lookup/delivery. Delivery still checks current permissions. A delivery error requests a fresh authorized snapshot instead of reporting a committed write as failed. Repeated recovery signals share an in-progress join. No polling loop, permission cache or new service is introduced.
+
+For an active personal room, database round trips on the acknowledgement path (including BEGIN/COMMIT, excluding authentication and socket handshake) change as follows:
+
+| Action | Before | After |
+| --- | ---: | ---: |
+| Initial socket join | 6 | 4 |
+| Submit question | 5 | 4 |
+| Vote | 6 plus batching delay | 5 |
+| Reply | 6 | 4 |
+
+Broadcast audience queries still happen after confirmation; they have not been removed. Votes preview immediately and roll back on rejection; question/reply previews explicitly say they are sending. Only committed state is shared with other users. These are code-path reductions, not measured production latency guarantees. No database migration or new environment variable is required.
+
+Local verification (29 October 2026): 54 backend tests including Nginx transport delivery, 74 frontend tests, lint and production build passed. A bounded 50-client loopback/PGlite workload had no failures and every client received the final vote count; repeated submissions saved one row. Its acknowledgement p95 was 90 ms for connect/join, 167 ms for submission and 81 ms for voting. These local numbers exclude real Firebase verification, WAN latency and Supabase concurrency; they are not production benchmarks. Participants can also show/hide the room QR from Session options without receiving host controls.
+
+The obsolete static theme prototype and unused exit-animation code were deleted. Local cleanup also removed empty legacy `backend/models`, `backend/utils`, `frontend/src/assets` folders and the unused MongoDB test binary cache (77,552,189 bytes). Those untracked local leftovers are not part of a deployment. Current tests, operational scripts, credentials and historical data are retained.
+
 Live room pages now obtain permissions from the authenticated socket join along with room data. They no longer perform a separate HTTP host check before opening the socket. Host controls start hidden, appear only after the server confirms `canManage`, and disappear on disconnect. Admin/organisation/report pages retain their separate access gates. Both old `/host/:id` and `/room/:id` links remain supported; the URL does not grant a role.
 
 Keep the backend and database geographically close. The reported deployment uses Railway Singapore and Supabase Mumbai; every serial database round trip crosses regions. Vercel serves this application's static frontend; moving a Vercel function region does not shorten the browser's direct requests to Railway. Review both providers' available regions and migration/backup procedures before moving an existing database.

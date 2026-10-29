@@ -21,6 +21,13 @@ test('personal room actions stay within the remote query budget and keep votes i
     const user = identity('test-query-budget');
     const room = await service.createRoom(user, 'Budget');
     queries = 0;
+    let subscribed = false;
+    const joined = await service.joinRoom(room.roomId, user, async () => { subscribed = true; assert.equal(queries, 1); });
+    assert.equal(queries, 2, 'authorize once, then combine membership and initial snapshot');
+    assert.equal(subscribed, true);
+    assert.equal(joined.room.canManage, true);
+    assert.deepEqual(joined.page.doubts, []);
+    queries = 0;
     const question = await service.addDoubt(room.roomId, { text: 'Question' }, user);
     assert.equal(queries, 2, 'authorization and question/member writes use two statements, excluding BEGIN/COMMIT');
     queries = 0;
@@ -30,6 +37,10 @@ test('personal room actions stay within the remote query budget and keep votes i
     assert.equal((await service.vote(room.roomId, question.id, user, true)).changed, false);
     assert.equal((await service.vote(room.roomId, question.id, user, false)).upvotes, 0);
     assert.equal((await service.vote(room.roomId, question.id, user, false)).changed, false);
+    queries = 0;
+    await service.markAnswered(room.roomId, question.id, user, 'A quick reply');
+    assert.equal(queries, 2, 'authorize once, then atomically save reply and audit');
+    assert.equal((await engine.query("SELECT count(*)::int AS count FROM undoubt.audit_events WHERE action='question.answered' AND target=$1", [question.id])).rows[0].count, 1);
     queries = 0;
     const access = await require('../services/access')(db).me(user);
     assert.equal(queries, 1);
@@ -122,9 +133,11 @@ test('broadcast privacy groups keep authors and managers distinct and suppress d
   assert.equal(peerView.isOwn, false); assert.equal(peerView.user, 'Participant');
   let deliveries = 0;
   peer.on('upvoteDoubt', () => deliveries++);
+  const delivered = new Promise(resolve => peer.once('upvoteDoubt', resolve));
   await emit(author, 'upvoteDoubt', room.roomId, saved.doubt.id);
   const retry = await emit(author, 'upvoteDoubt', room.roomId, saved.doubt.id);
   assert.equal(retry.changed, false); assert.equal(retry.upvotes, 1);
+  await delivered;
   assert.equal(deliveries, 1);
 });
 

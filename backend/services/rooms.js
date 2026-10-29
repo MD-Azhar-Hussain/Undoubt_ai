@@ -58,12 +58,23 @@ module.exports = function createRoomService(db, { generateCode = () => String(ra
     }
     return room;
   }
-  async function joinRoom(id, user) {
+  const doubtPage = (rows, user, canManage) => ({
+    doubts: rows.slice(0, 100).map(d => serializeDoubt(d, user, canManage)),
+    nextCursor: rows.length > 100 ? String(rows[99].sequence) : null,
+  });
+  async function joinRoom(id, user, subscribe = async () => {}) {
     return db.transaction(async client => {
-      const room = await accessibleRoom(id, user, client, true);
-      await client.query(`INSERT INTO undoubt.room_members(room_id,user_id) VALUES ($1,$2)
-        ON CONFLICT (room_id,user_id) DO UPDATE SET last_visited_at=now()`, [id, user.uid]);
-      return room;
+      const room = await accessibleRoom(id, user, client, 'share');
+      // Subscribe after authorization but before reading the snapshot so live
+      // events cannot fall into a gap. Keep access locks until the read commits.
+      await subscribe(room);
+      const { rows } = await client.query(`WITH membership AS (
+        INSERT INTO undoubt.room_members(room_id,user_id) VALUES ($1,$2)
+        ON CONFLICT (room_id,user_id) DO UPDATE SET last_visited_at=now()
+        WHERE undoubt.room_members.last_visited_at < now()-interval '1 minute')
+        SELECT q.*, EXISTS(SELECT 1 FROM undoubt.votes v WHERE v.question_id=q.id AND v.user_id=$2) AS voted
+        FROM undoubt.questions q WHERE room_id=$1 ORDER BY sequence DESC LIMIT 101`, [id, user.uid]);
+      return { room, page: doubtPage(rows, user, room.canManage) };
     });
   }
   async function listDoubts(id, user, before, archive = false) {
@@ -71,8 +82,7 @@ module.exports = function createRoomService(db, { generateCode = () => String(ra
     if (before !== undefined && (typeof before !== 'string' || !/^[1-9][0-9]{0,18}$/.test(before) || BigInt(before) > 9223372036854775807n)) throw new AppError(400, 'Invalid cursor');
     const { rows } = await db.query(`SELECT q.*, EXISTS(SELECT 1 FROM undoubt.votes v WHERE v.question_id=q.id AND v.user_id=$2) AS voted
       FROM undoubt.questions q WHERE room_id=$1 AND ($3::bigint IS NULL OR sequence < $3) ORDER BY sequence DESC LIMIT 101`, [id, user.uid, before || null]);
-    const page = rows.slice(0, 100);
-    return { doubts: page.map(d => serializeDoubt(d, user, room.canManage)), nextCursor: rows.length > 100 ? String(page.at(-1).sequence) : null };
+    return doubtPage(rows, user, room.canManage);
   }
   async function addDoubt(id, input, user) {
     const value = text(input?.text, 'Question');
@@ -122,11 +132,14 @@ module.exports = function createRoomService(db, { generateCode = () => String(ra
     questionId(qid);
     const value = answer === undefined ? null : text(answer, 'Reply', 5000);
     return mutate(id, user, true, async (client, room) => {
-      const { rows } = await client.query(`UPDATE undoubt.questions SET answered=true, answer=COALESCE($3,answer),
-        answered_at=now(), revision=revision+1 WHERE room_id=$1 AND id=$2 RETURNING *`, [id, qid, value]);
+      const { rows } = await client.query(`WITH updated AS (
+        UPDATE undoubt.questions SET answered=true, answer=COALESCE($3,answer),
+        answered_at=now(), revision=revision+1 WHERE room_id=$1 AND id=$2 RETURNING *),
+        audited AS (INSERT INTO undoubt.audit_events(organisation_id,actor_id,action,target,details)
+          SELECT $4,$5,'question.answered',id::text,jsonb_build_object('roomId',room_id,'revision',revision) FROM updated)
+        SELECT * FROM updated`, [id, qid, value, room.organisationId, user.uid]);
       if (!rows[0]) throw new AppError(404, 'Question not found');
       const d = rows[0];
-      await access.audit(client, user, room.organisationId, 'question.answered', qid, { roomId: id, revision: d.revision });
       return { id: d.id, answer: d.answer, answeredAt: d.answered_at, answered: d.answered, revision: d.revision, upvotes: d.upvotes };
     }, true);
   }

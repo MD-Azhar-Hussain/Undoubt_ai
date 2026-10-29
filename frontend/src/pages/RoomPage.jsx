@@ -35,7 +35,7 @@ const RoomSession = ({ roomId, user }) => {
   const newDoubt = draft.text;
   const setNewDoubt = draft.setText;
 
-  const pendingVotes = useRef(new Set());
+  const pendingVotes = useRef(new Map());
   const pendingAnswers = useRef(new Set());
   const submissionInFlight = useRef(false);
   const questionInput = useRef(null);
@@ -44,7 +44,7 @@ const RoomSession = ({ roomId, user }) => {
   const [doubts, setDoubts] = useState([]);
   const [search, setSearch] = useState('');
   const [sortOrder, setSortOrder] = useState('popular');
-  const [votingIds, setVotingIds] = useState(new Set());
+  const [votePreviews, setVotePreviews] = useState(new Map());
   const [answeringIds, setAnsweringIds] = useState(new Set());
   const [submissionMessage, setSubmissionMessage] = useState('');
   const [connectionState, setConnectionState] = useState('connecting');
@@ -58,6 +58,7 @@ const RoomSession = ({ roomId, user }) => {
   const [nextCursor, setNextCursor] = useState(null);
   const [connected, setConnected] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [sendingQuestion, setSendingQuestion] = useState(null);
   const deferredDraft = useDeferredValue(newDoubt);
   const [upvotedDoubts, setUpvotedDoubts] = useState(new Set());
   const [visibleEmails, setVisibleEmails] = useState(new Set());
@@ -66,7 +67,6 @@ const RoomSession = ({ roomId, user }) => {
   const [activeTab, setActiveTab] = useState('active'); // 'active' or 'answered'
   const [showQRCode, setShowQRCode] = useState(false);
   const [recentlyAnswered, setRecentlyAnswered] = useState(new Set());
-  const [transitioningToAnswered, setTransitioningToAnswered] = useState(new Set());
   const [isQrFullscreen, setIsQrFullscreen] = useState(false);
   const [qrFullscreenSize, setQrFullscreenSize] = useState(400);
   const [roomName, setRoomName] = useState('');
@@ -74,6 +74,7 @@ const RoomSession = ({ roomId, user }) => {
 
   useEffect(() => {
     let disposed = false;
+    let joining = false, joinAttempt = 0;
     let pendingSnapshotUpdates = [];
     let questionsDuringJoin = new Set();
     let lastPeerNotification = -Infinity;
@@ -87,13 +88,17 @@ const RoomSession = ({ roomId, user }) => {
       timers.add(timer);
     };
     const join = () => {
+      if (joining) return;
+      joining = true;
+      const attempt = ++joinAttempt;
       pendingSnapshotUpdates = [];
       questionsDuringJoin = new Set();
       setConnected(false);
       setCanManage(false);
       setConnectionState('connecting');
       socket.timeout(10000).emit('joinRoom', roomId, (error, result) => {
-        if (disposed) return;
+        if (disposed || attempt !== joinAttempt) return;
+        joining = false;
         if (error) { setConnectionState('disconnected'); toast.error('Could not join the room. Please reconnect.'); return; }
         setConnected(!!result?.ok);
         setConnectionState(result?.ok ? 'connected' : 'disconnected');
@@ -112,6 +117,8 @@ const RoomSession = ({ roomId, user }) => {
     const expired = () => { socket.disconnect(); socket.connect(); };
     socket.on('sessionExpired', expired);
     const disconnected = reason => {
+      joining = false;
+      joinAttempt++;
       setConnected(false);
       setCanManage(false);
       if (reason === 'io server disconnect') setDoubts([]);
@@ -120,6 +127,7 @@ const RoomSession = ({ roomId, user }) => {
     const failure = error => toast.error(error.message, { toastId: `room-error-${error.message}` });
     const connectionFailure = error => { disconnected(); failure(error); };
     socket.on('connect', join);
+    socket.on('syncRequired', join);
     socket.on('disconnect', disconnected);
     socket.on('connect_error', connectionFailure);
     socket.on('operationError', failure);
@@ -157,6 +165,7 @@ const RoomSession = ({ roomId, user }) => {
     });
 
     socket.on('newDoubt', (doubt) => {
+      if (doubt.isOwn) setSendingQuestion(current => current?.text === doubt.text ? null : current);
       if (pendingSnapshotUpdates) questionsDuringJoin.add(doubt.id);
       setDoubts(previous => mergeDoubts(previous, [doubt]));
       if (seenQuestions.has(doubt.id)) return;
@@ -180,45 +189,14 @@ const RoomSession = ({ roomId, user }) => {
 
     socket.on('markAsAnswered', (doubtId, answered, update) => {
       if (update) pendingSnapshotUpdates?.push({ ...update, id: doubtId });
-      if (update) setDoubts(previous => previous.map(d => d.id === doubtId && update.revision >= (d.revision || 0) ? { ...d, ...update } : d));
+      setDoubts(previous => updateDoubt(previous, { id: doubtId, answered, ...update }));
       if (answered && seenAnswers.has(doubtId)) return;
       if (answered) seenAnswers.add(doubtId); else seenAnswers.delete(doubtId);
       if (answered) {
-        // Stage slide-out in Active for all clients
-        setTransitioningToAnswered((prev) => new Set(prev).add(doubtId));
-        later(() => {
-          setDoubts((prevDoubts) =>
-            prevDoubts.map((doubt) =>
-              doubt.id === doubtId ? { ...doubt, answered: true } : doubt
-            )
-          );
-          setRecentlyAnswered((prev) => {
-            const next = new Set(prev);
-            next.add(doubtId);
-            return next;
-          });
-          later(() => {
-            setRecentlyAnswered((prev) => {
-              const next = new Set(prev);
-              next.delete(doubtId);
-              return next;
-            });
-          }, 600);
-          // Clean up exiting flag once moved
-          later(() => {
-            setTransitioningToAnswered((prev) => {
-              const next = new Set(prev);
-              next.delete(doubtId);
-              return next;
-            });
-          }, 120);
-        }, 150);
-      } else {
-        setDoubts((prevDoubts) =>
-          prevDoubts.map((doubt) =>
-            doubt.id === doubtId ? { ...doubt, answered } : doubt
-          )
-        );
+        setRecentlyAnswered(previous => new Set(previous).add(doubtId));
+        later(() => setRecentlyAnswered(previous => {
+          const next = new Set(previous); next.delete(doubtId); return next;
+        }), 600);
       }
       toast.success(answered ? 'Question marked as answered' : 'Question reopened', {
         toastId: 'answer-' + doubtId,
@@ -249,6 +227,7 @@ const RoomSession = ({ roomId, user }) => {
       timers.forEach(clearTimeout);
       socket.off('sessionExpired', expired);
       socket.off('connect', join);
+      socket.off('syncRequired', join);
       socket.off('disconnect', disconnected);
       socket.off('connect_error', connectionFailure);
       socket.off('operationError', failure);
@@ -304,7 +283,9 @@ const RoomSession = ({ roomId, user }) => {
     submissionInFlight.current = true;
     setSubmissionMessage('');
     setSubmitting(true);
+    setSendingQuestion(doubt);
     socket.timeout(10000).emit('newDoubt', roomId, doubt, (error, result) => {
+      setSendingQuestion(null);
       setSubmitting(false);
       submissionInFlight.current = false;
       if (error) { setSubmissionMessage('No confirmation yet. Retry this question safely; it will only be saved once.'); return; }
@@ -315,20 +296,28 @@ const RoomSession = ({ roomId, user }) => {
   };
 
   const handleToggleUpvote = (id) => {
-    if (!connected || isRoomClosed || pendingVotes.current.has(id)) return;
-    pendingVotes.current.add(id);
-    setVotingIds(new Set(pendingVotes.current));
-    const event = upvotedDoubts.has(id) ? 'downvoteDoubt' : 'upvoteDoubt';
+    if (!connected || !socket.connected || isRoomClosed || pendingVotes.current.has(id)) return;
+    const question = doubts.find(doubt => doubt.id === id);
+    if (!question) return;
+    const wasVoted = upvotedDoubts.has(id);
+    pendingVotes.current.set(id, { revision: question.revision || 0, delta: wasVoted ? -1 : 1 });
+    setVotePreviews(new Map(pendingVotes.current));
+    setUpvotedDoubts(previous => {
+      const next = new Set(previous);
+      if (wasVoted) next.delete(id); else next.add(id);
+      return next;
+    });
+    const event = wasVoted ? 'downvoteDoubt' : 'upvoteDoubt';
     socket.timeout(10000).emit(event, roomId, id, (error, result) => {
       pendingVotes.current.delete(id);
-      setVotingIds(new Set(pendingVotes.current));
-      if (error) return toast.error('Vote not confirmed. Reconnect to refresh your votes.');
-      if (!result?.ok) return;
+      setVotePreviews(new Map(pendingVotes.current));
       setUpvotedDoubts(previous => {
         const next = new Set(previous);
-        if (result.voted) next.add(id); else next.delete(id);
+        if (!error && result?.ok ? result.voted : wasVoted) next.add(id); else next.delete(id);
         return next;
       });
+      if (error) return toast.error('Vote not confirmed. Reconnect to refresh your votes.');
+      if (!result?.ok) return;
       setDoubts(previous => previous.map(d => d.id === id && (result.revision || 0) >= (d.revision || 0)
         ? { ...d, upvotes: result.upvotes, revision: result.revision } : d));
     });
@@ -461,11 +450,17 @@ const RoomSession = ({ roomId, user }) => {
 
   const [sortedActiveDoubts, sortedAnsweredDoubts] = useMemo(() => {
     const query = search.trim().toLowerCase();
-    const filtered = doubts.filter(d => (!onlyMine || d.isOwn) && `${d.text} ${d.answer || ''}`.toLowerCase().includes(query));
+    const filtered = doubts.map(doubt => {
+      const pending = votePreviews.get(doubt.id);
+      // New server revisions already include committed changes. Do not add the
+      // preview twice when a broadcast arrives before the acknowledgement.
+      return pending && pending.revision === (doubt.revision || 0)
+        ? { ...doubt, upvotes: Math.max(0, doubt.upvotes + pending.delta) } : doubt;
+    }).filter(d => (!onlyMine || d.isOwn) && `${d.text} ${d.answer || ''}`.toLowerCase().includes(query));
     const time = doubt => Date.parse(doubt.createdAt) || 0;
     const compare = (a, b) => sortOrder === 'newest' ? time(b) - time(a) : sortOrder === 'oldest' ? time(a) - time(b) : b.upvotes - a.upvotes || time(a) - time(b);
-    return [filtered.filter(d => !d.answered || transitioningToAnswered.has(d.id)).sort(compare), filtered.filter(d => d.answered).sort(compare)];
-  }, [doubts, onlyMine, search, transitioningToAnswered, sortOrder]);
+    return [filtered.filter(d => !d.answered).sort(compare), filtered.filter(d => d.answered).sort(compare)];
+  }, [doubts, onlyMine, search, votePreviews, sortOrder]);
   const similarDoubt = useMemo(() => deferredDraft.trim().length < 3 ? undefined : doubts.find(doubt =>
     typeof doubt.text === 'string' && stringSimilarity.compareTwoStrings(deferredDraft, doubt.text) > 0.7), [deferredDraft, doubts]);
 
@@ -525,14 +520,17 @@ const RoomSession = ({ roomId, user }) => {
               <button className="room-tools-toggle" aria-expanded={showTools} aria-controls="room-tools" onClick={() => setShowTools(value => !value)}>Session options <span aria-hidden="true">{showTools ? '−' : '+'}</span></button>
               <div id="room-tools" className={`room-tools ${showTools ? 'is-open' : ''}`}>
               {!isRoomClosed && <button onClick={handleCopyRoomLink} className="px-3 py-2 bg-blue-700 rounded-lg">Copy room link</button>}
-              {role === 'host' && !isRoomClosed && (
-                <>
+              {!isRoomClosed && (
                   <button
                     onClick={toggleQRCode}
+                    aria-expanded={showQRCode}
+                    aria-controls="room-qr"
                     className="px-3 py-1.5 text-xs sm:text-sm bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shrink-0"
                   >
                     {showQRCode ? 'Hide QR' : 'Show QR'}
                   </button>
+              )}
+              {role === 'host' && !isRoomClosed && (
                   <button
                     disabled={!connected || closing}
                     onClick={() => setConfirmClose(true)}
@@ -540,7 +538,6 @@ const RoomSession = ({ roomId, user }) => {
                   >
                     Close Room
                   </button>
-                </>
               )}
               {(
                 <button
@@ -561,9 +558,8 @@ const RoomSession = ({ roomId, user }) => {
         <p className="text-gray-300 my-3">New questions and votes will stop. Everyone who joined can revisit the session, and you can keep replying.</p>
         <div className="flex flex-wrap gap-3"><button disabled={closing} onClick={handleCloseRoom} className="px-4 py-2 bg-red-700 rounded-lg">{closing ? 'Closing…' : 'End session'}</button><button disabled={closing} onClick={() => setConfirmClose(false)} className="px-4 py-2 bg-gray-700 rounded-lg">Keep live</button></div>
       </section>}
-      {/* QR Code Section (for hosts) */}
-      {role === 'host' && !isRoomClosed && showQRCode && (
-        <div className="room-share bg-gray-800 bg-opacity-50 p-4 border-b border-gray-700">
+      {!isRoomClosed && showQRCode && (
+        <div id="room-qr" className="room-share bg-gray-800 bg-opacity-50 p-4 border-b border-gray-700">
           <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-center space-y-4 sm:space-y-0 sm:space-x-8">
             <button onClick={openQrFullscreen} className="group focus:outline-none">
               <QRCode
@@ -682,6 +678,10 @@ const RoomSession = ({ roomId, user }) => {
         )}
 
         <section ref={questionWorkspace} tabIndex={-1} className="question-workspace" aria-label="Session questions">
+        {sendingQuestion && <div role="status" className="doubt-card p-4 mb-4 rounded-xl border border-blue-400/40 bg-gray-900/50">
+          <p className="text-sm text-blue-200">Sending your question…</p>
+          <p className="question-text whitespace-pre-wrap break-words mt-2">{sendingQuestion.text}</p>
+        </div>}
         <div className="question-filters">
           <label className="flex-1 text-sm text-gray-200"><span className="sr-only">Search loaded questions and replies</span>
             <input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by keyword…" className="block w-full bg-gray-900 border border-white/20 rounded-lg px-4 py-3" />
@@ -743,7 +743,6 @@ const RoomSession = ({ roomId, user }) => {
                       onReply={handleReply}
                       connected={connected}
                       closed={isRoomClosed}
-                      isExiting={transitioningToAnswered.has(doubt.id)}
                       upvotedDoubts={upvotedDoubts}
                       role={role}
                       visibleEmails={visibleEmails}
@@ -751,7 +750,7 @@ const RoomSession = ({ roomId, user }) => {
                       onToggleEmailVisibility={handleToggleEmailVisibility}
                       onMarkAsAnswered={handleMarkAsAnswered}
                       onToggleUpvote={handleToggleUpvote}
-                      voting={votingIds.has(doubt.id)} answering={answeringIds.has(doubt.id)}
+                      voting={votePreviews.has(doubt.id)} answering={answeringIds.has(doubt.id)}
                     />
                   ))}
                 </div>
@@ -785,7 +784,7 @@ const RoomSession = ({ roomId, user }) => {
                       onToggleEmailVisibility={handleToggleEmailVisibility}
                       onMarkAsAnswered={handleMarkAsAnswered}
                       onToggleUpvote={handleToggleUpvote}
-                      voting={votingIds.has(doubt.id)} answering={answeringIds.has(doubt.id)}
+                      voting={votePreviews.has(doubt.id)} answering={answeringIds.has(doubt.id)}
                     />
                   ))}
                 </div>

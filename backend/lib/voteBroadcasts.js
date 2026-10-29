@@ -1,5 +1,5 @@
 // Collapse a burst of committed counter revisions into its newest state.
-// Callers still wait for the broadcast before receiving their acknowledgement.
+// Committed writes are acknowledged separately; this batches delivery to peers.
 function createVoteBroadcasts(broadcast, { delayMs = 25 } = {}) {
   const pending = new Map();
   let timer;

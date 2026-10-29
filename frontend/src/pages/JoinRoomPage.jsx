@@ -1,6 +1,5 @@
 import { useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import axios from '../utils/http';
 import { parseRoomCode } from '../utils/roomLinks';
 import { FRONTEND_URL } from '../utils/constants';
 
@@ -13,7 +12,7 @@ const JoinRoomPage = () => {
   const input = useRef(null);
   const navigate = useNavigate();
 
-  const handleJoinRoom = async (event) => {
+  const handleJoinRoom = (event) => {
     event.preventDefault();
     if (joining) return;
     let code;
@@ -21,21 +20,8 @@ const JoinRoomPage = () => {
     catch (error) { setErrorMessage(error.message); input.current?.focus(); return; }
     setErrorMessage('');
     setJoining(true);
-    try {
-      const response = await axios.get(`/rooms/${code}`);
-      if (response.data.exists) {
-        // Persist room name locally for immediate display
-        const topic = response.data?.room?.topic;
-        if (typeof topic === 'string' && topic.trim()) {
-          try { localStorage.setItem(`roomName:${code}`, topic.trim()); } catch { /* Storage may be unavailable. */ }
-        }
-        navigate(`/${response.data.room?.canManage ? 'host' : 'room'}/${code}`);
-      } else {
-        setErrorMessage('Room not found. Check the code with your host.');
-      }
-    } catch (error) {
-      setErrorMessage(error.response?.data?.message || 'Could not connect. Your code is kept—try again in a moment.');
-    } finally { setJoining(false); }
+    // The room's authenticated socket validates access and supplies permissions.
+    navigate(`/room/${code}`);
   };
 
   return (

@@ -13,8 +13,9 @@ module.exports = (io, socket, service, consumeAction, broadcastVote) => {
     try {
       consumeAction(user.uid);
       if (user.exp && Date.now() >= user.exp * 1000) throw new AppError(401, 'Session expired. Reconnect to continue.');
-      const result = await socketPerformance(event, () => fn(...args));
+      const { publish, ...result } = await socketPerformance(event, () => fn(...args)) || {};
       ack({ ok: true, ...result });
+      if (publish) await publish();
     } catch (error) {
       const payload = { ok: false, status: error.status || 500, ...publicError(error) };
       ack(payload);
@@ -25,14 +26,28 @@ module.exports = (io, socket, service, consumeAction, broadcastVote) => {
     if (!socket.rooms.has(id)) throw new AppError(403, 'Join this room first');
     // Every mutation checks fresh permissions inside its database transaction.
   };
+  // Acknowledgements confirm a committed write. Fan-out must not delay that
+  // confirmation or misreport a saved action as failed if delivery breaks.
+  const afterCommit = (id, publish) => async () => {
+    try { await publish(); }
+    catch {
+      console.error('Room update delivery failed; requesting fresh snapshots');
+      io.to(id).emit('syncRequired');
+    }
+  };
   register('joinRoom', async id => {
-    const room = await service.joinRoom(id, user);
     for (const joined of socket.rooms) if (joined !== socket.id) await socket.leave(joined);
-    await socket.join(id);
-    if (room.organisationId) await socket.join(`org:${room.organisationId}`);
-    const page = await service.listDoubts(id, user);
-    socket.emit('roomInfo', service.serializeRoom(room));
-    socket.emit('existingDoubts', page.doubts, page.nextCursor);
+    try {
+      const { room, page } = await service.joinRoom(id, user, async room => {
+        await socket.join(id);
+        if (room.organisationId) await socket.join(`org:${room.organisationId}`);
+      });
+      socket.emit('roomInfo', service.serializeRoom(room));
+      socket.emit('existingDoubts', page.doubts, page.nextCursor);
+    } catch (error) {
+      for (const joined of socket.rooms) if (joined !== socket.id) await socket.leave(joined);
+      throw error;
+    }
   });
   register('leaveRoom', async id => { if (typeof id === 'string' && id !== socket.id) await socket.leave(id); });
   register('updateRoomTopic', async (id, topic) => {
@@ -43,20 +58,18 @@ module.exports = (io, socket, service, consumeAction, broadcastVote) => {
   register('newDoubt', async (id, input) => {
     requireJoined(id);
     const doubt = await service.addDoubt(id, input, user);
-    if (doubt.created) await service.broadcastDoubt(io, id, doubt);
-    return { doubt: service.serializeDoubt(doubt, user, false) };
+    return { doubt: service.serializeDoubt(doubt, user, false),
+      publish: doubt.created ? afterCommit(id, () => service.broadcastDoubt(io, id, doubt)) : undefined };
   });
   for (const event of ['upvoteDoubt', 'downvoteDoubt']) register(event, async (id, doubtId) => {
     requireJoined(id);
     const result = await service.vote(id, doubtId, user, event === 'upvoteDoubt');
-    if (result.changed) await broadcastVote(id, event, { doubtId, upvotes: result.upvotes, revision: result.revision });
-    return result;
+    return { ...result, publish: result.changed ? afterCommit(id, () => broadcastVote(id, event, { doubtId, upvotes: result.upvotes, revision: result.revision })) : undefined };
   });
   register('markAsAnswered', async (id, doubtId, answer) => {
     requireJoined(id);
     const update = await service.markAnswered(id, doubtId, user, answer);
-    await service.broadcastEvent(io, id, 'markAsAnswered', doubtId, true, update);
-    return { update };
+    return { update, publish: afterCommit(id, () => service.broadcastEvent(io, id, 'markAsAnswered', doubtId, true, update)) };
   });
   register('closeRoom', async id => { requireJoined(id); await service.closeRoom(id, user, io); });
 };

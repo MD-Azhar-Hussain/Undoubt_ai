@@ -225,14 +225,67 @@ describe('room confirmation and recovery', () => {
     joined();
     expect(screen.getByRole('button', { name: 'Submit Doubt' }).disabled).toBe(false);
   });
-  it('does not claim an upvote when the server rejects it', () => {
+  it('previews a vote immediately and rolls it back when rejected', () => {
     mount(); joined();
     act(() => handlers.existingDoubts([{ id: 'q1', text: 'Why?', user: 'Participant', upvotes: 0, upvotedBy: [], answered: false }], null));
     fireEvent.click(screen.getByTitle('Upvote'));
+    expect(screen.getByTitle('Remove upvote').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('1 upvotes')).toBeTruthy();
     const call = socket.emit.mock.calls.find(call => call[0] === 'upvoteDoubt');
     act(() => call.at(-1)(null, { ok: false, message: 'Room closed' }));
     expect(screen.queryByTitle('Remove upvote')).toBeNull();
     expect(screen.getByTitle('Upvote')).toBeTruthy();
+    expect(screen.getByText('0 upvotes')).toBeTruthy();
+  });
+  it('does not double-count an optimistic vote or overwrite a newer peer revision', () => {
+    mount(); joined();
+    act(() => handlers.existingDoubts([{ id: 'q1', text: 'Why?', upvotes: 4, revision: 4, upvotedBy: [], answered: false }], null));
+    fireEvent.click(screen.getByTitle('Upvote'));
+    const call = socket.emit.mock.calls.find(call => call[0] === 'upvoteDoubt');
+    expect(screen.getByText('5 upvotes')).toBeTruthy();
+    act(() => handlers.upvoteDoubt({ doubtId: 'q1', upvotes: 6, revision: 6 }));
+    expect(screen.getByText('6 upvotes')).toBeTruthy();
+    act(() => call.at(-1)(null, { ok: true, voted: true, upvotes: 5, revision: 5 }));
+    expect(screen.getByText('6 upvotes')).toBeTruthy();
+    expect(screen.getByTitle('Remove upvote').disabled).toBe(false);
+  });
+  it('previews vote removal and restores it on timeout', () => {
+    mount(); joined();
+    act(() => handlers.existingDoubts([{ id: 'q1', text: 'Why?', upvotes: 2, revision: 2, upvotedBy: ['student'] }], null));
+    fireEvent.click(screen.getByTitle('Remove upvote'));
+    expect(screen.getByText('1 upvotes')).toBeTruthy();
+    const call = socket.emit.mock.calls.find(call => call[0] === 'downvoteDoubt');
+    act(() => call.at(-1)(new Error('timeout')));
+    expect(screen.getByText('2 upvotes')).toBeTruthy();
+    expect(screen.getByTitle('Remove upvote')).toBeTruthy();
+  });
+  it('shows a sending question immediately, then replaces it with the committed question', () => {
+    mount(); joined();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Your question' }), { target: { value: 'Immediate feedback' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Doubt' }));
+    expect(screen.getByText('Sending your question…')).toBeTruthy();
+    expect(screen.getAllByText('Immediate feedback').length).toBeGreaterThan(0);
+    const call = socket.emit.mock.calls.find(call => call[0] === 'newDoubt');
+    act(() => call.at(-1)(null, { ok: true, doubt: { id: 'q1', text: 'Immediate feedback', upvotes: 0, upvotedBy: [], isOwn: true } }));
+    expect(screen.queryByText('Sending your question…')).toBeNull();
+    expect(screen.getAllByText('Immediate feedback')).toHaveLength(1);
+  });
+  it('resynchronizes on a delivery failure without a page refresh', () => {
+    mount(); joined();
+    act(() => { for (let i = 0; i < 20; i++) handlers.syncRequired(); });
+    expect(socket.emit.mock.calls.filter(call => call[0] === 'joinRoom')).toHaveLength(2);
+    expect(http.get).not.toHaveBeenCalled();
+  });
+  it('ignores an old join acknowledgement after the connection changes', () => {
+    mount();
+    const oldJoin = socket.emit.mock.calls.find(call => call[0] === 'joinRoom');
+    act(() => { handlers.disconnect('transport close'); handlers.connect(); });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Your question' }), { target: { value: 'Wait for current access' } });
+    act(() => oldJoin.at(-1)(null, { ok: true }));
+    expect(screen.getByRole('button', { name: 'Submit Doubt' }).disabled).toBe(true);
+    const current = socket.emit.mock.calls.filter(call => call[0] === 'joinRoom').at(-1);
+    act(() => current.at(-1)(null, { ok: true }));
+    expect(screen.getByRole('button', { name: 'Submit Doubt' }).disabled).toBe(false);
   });
   it('ignores older vote broadcasts and rejoins after reconnecting', () => {
     mount(); joined();
@@ -256,6 +309,7 @@ describe('closed-session follow-up', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reply', exact: true }));
     fireEvent.change(screen.getByLabelText('Your reply'), { target: { value: 'Resistance to changes in motion.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save reply' }));
+    expect(screen.getByText('Sending reply…')).toBeTruthy();
     const call = socket.emit.mock.calls.find(c => c[0] === 'markAsAnswered');
     expect(call.slice(0, 4)).toEqual(['markAsAnswered', '12345', 'q1', 'Resistance to changes in motion.']);
     await act(async () => call.at(-1)(null, { ok: true, update: { answered: true, answer: call[3], revision: 1 } }));
@@ -294,6 +348,16 @@ describe('closed-session follow-up', () => {
 });
 
 describe('mobile disclosure controls', () => {
+  it('lets a participant show and hide the room QR without host powers', () => {
+    mount(); joined();
+    fireEvent.click(screen.getByRole('button', { name: 'Session options' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show QR' }));
+    expect(screen.getByRole('button', { name: 'Hide QR' }).getAttribute('aria-expanded')).toBe('true');
+    expect(document.getElementById('room-qr').querySelector('svg')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Close Room' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide QR' }));
+    expect(document.getElementById('room-qr')).toBeNull();
+  });
   it('keeps a question draft when the composer is collapsed and reopened', () => {
     mount(); joined();
     const toggle = screen.getByRole('button', { name: 'Ask a question' });
