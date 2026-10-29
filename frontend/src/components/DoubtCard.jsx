@@ -135,7 +135,7 @@ const DoubtCard = ({
             <p className="reply-text mt-2 whitespace-pre-wrap break-words text-gray-100">{saving ? reply : doubt.answer}</p>
             {!saving && doubt.answeredAt && <p className="text-xs text-gray-300 mt-2">Updated {new Date(doubt.answeredAt).toLocaleString()}</p>}
           </div>}
-          {editing && <form onSubmit={saveReply} className="mt-4 space-y-3">
+          {editing && role === 'host' && <form onSubmit={saveReply} className="mt-4 space-y-3">
             <label htmlFor={`reply-${doubt.id}`} className="block text-sm font-medium">Your reply</label>
             <textarea id={`reply-${doubt.id}`} autoFocus maxLength={5000} value={reply} onChange={e => { setReply(e.target.value); setReplyError(''); }} disabled={saving} className="w-full min-h-32 rounded-lg border border-white/25 bg-gray-950 p-3" />
             {replyError && <p className="interaction-error" role="alert">{replyError}</p>}

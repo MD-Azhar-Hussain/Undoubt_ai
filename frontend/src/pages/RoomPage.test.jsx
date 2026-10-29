@@ -23,15 +23,20 @@ import RoomPage from './RoomPage';
 import http from '../utils/http';
 import { toast } from 'react-toastify';
 
+let joiningAsHost = false;
 function mount(role = 'participant') {
+  joiningAsHost = role === 'host';
   render(<MemoryRouter initialEntries={['/room/12345']}><Routes><Route path="/room/:roomId" element={<RoomPage />} /><Route path="/access-denied" element={<p>Access denied</p>} /><Route path="/login" element={<p>Sign in again</p>} /></Routes></MemoryRouter>);
-  if (role === 'host') act(() => handlers.roomInfo({ canManage: true, topic: 'Physics', status: 'active' }));
 }
-function joined() {
+function joined(canManage = joiningAsHost) {
   const call = socket.emit.mock.calls.find(call => call[0] === 'joinRoom');
-  act(() => call.at(-1)(null, { ok: true }));
+  act(() => {
+    handlers.roomInfo({ canManage, topic: 'Physics', status: 'active' });
+    call.at(-1)(null, { ok: true });
+  });
 }
 beforeEach(() => {
+  joiningAsHost = false;
   sessionStorage.clear();
   vi.clearAllMocks(); socket.connected = false; socket.timeout.mockReturnValue(socket);
   vi.spyOn(toast, 'success').mockImplementation(() => 'success');
@@ -39,13 +44,78 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 describe('room confirmation and recovery', () => {
+  it.each(['/room/12345', '/host/12345'])('opens %s without flashing participant controls before host confirmation', path => {
+    render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/room/:roomId" element={<RoomPage />} /><Route path="/host/:roomId" element={<RoomPage />} /></Routes></MemoryRouter>);
+    expect(screen.getByRole('heading', { name: 'Opening your room…' })).toBeTruthy();
+    expect(screen.queryByText('PARTICIPANT')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Your question' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Close Room' })).toBeNull();
+    act(() => handlers.roomInfo({ canManage: true, topic: 'Physics', status: 'active' }));
+    expect(screen.getByRole('button', { name: 'Close Room' }).disabled).toBe(true);
+    expect(screen.queryByRole('textbox', { name: 'Your question' })).toBeNull();
+    joined(true);
+    expect(screen.getByText('HOST')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Close Room' }).disabled).toBe(false);
+    expect(http.get).not.toHaveBeenCalled();
+  });
+  it('does not treat missing role data or an acknowledgement alone as participant access', () => {
+    mount();
+    const join = socket.emit.mock.calls.find(call => call[0] === 'joinRoom');
+    act(() => { handlers.roomInfo({ topic: 'Physics' }); join.at(-1)(null, { ok: true }); });
+    expect(screen.queryByRole('textbox', { name: 'Your question' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Opening your room…' })).toBeTruthy();
+    act(() => handlers.roomInfo({ canManage: false, topic: 'Physics', status: 'active' }));
+    expect(screen.getByRole('textbox', { name: 'Your question' })).toBeTruthy();
+  });
+  it('offers recovery after an initial timeout without showing either role', () => {
+    mount();
+    const join = socket.emit.mock.calls.find(call => call[0] === 'joinRoom');
+    act(() => join.at(-1)(new Error('timeout')));
+    expect(screen.getByRole('heading', { name: 'Unable to open your room' })).toBeTruthy();
+    expect(screen.queryByText('PARTICIPANT')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Your question' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    expect(socket.emit.mock.calls.filter(call => call[0] === 'joinRoom')).toHaveLength(2);
+    expect(screen.getByRole('heading', { name: 'Opening your room…' })).toBeTruthy();
+  });
+  it('preserves the host layout and reply draft through a transient reconnect', () => {
+    mount('host'); joined();
+    act(() => handlers.existingDoubts([{ id: 'q1', text: 'Explain inertia?', upvotes: 0, upvotedBy: [] }], null));
+    fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
+    fireEvent.change(screen.getByLabelText('Your reply'), { target: { value: 'Keep this reply draft' } });
+    act(() => handlers.disconnect('transport close'));
+    expect(screen.getByText('HOST')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Close Room' }).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Save reply' }).disabled).toBe(true);
+    expect(screen.queryByRole('textbox', { name: 'Your question' })).toBeNull();
+    act(() => handlers.connect());
+    expect(screen.getByLabelText('Your reply').value).toBe('Keep this reply draft');
+    const join = socket.emit.mock.calls.filter(call => call[0] === 'joinRoom').at(-1);
+    act(() => { handlers.roomInfo({ canManage: true, status: 'active' }); join.at(-1)(null, { ok: true }); });
+    expect(screen.getByRole('button', { name: 'Save reply' }).disabled).toBe(false);
+    expect(screen.queryByRole('textbox', { name: 'Your question' })).toBeNull();
+  });
+  it('replaces the retained host layout when the server confirms changed permissions', () => {
+    mount('host'); joined();
+    act(() => handlers.existingDoubts([{ id: 'q1', text: 'Question', upvotes: 0, upvotedBy: [] }], null));
+    fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close Room' }));
+    act(() => { handlers.disconnect('transport close'); handlers.connect(); });
+    const join = socket.emit.mock.calls.filter(call => call[0] === 'joinRoom').at(-1);
+    act(() => { handlers.roomInfo({ canManage: false, status: 'active' }); join.at(-1)(null, { ok: true }); });
+    expect(screen.queryByRole('button', { name: 'Close Room' })).toBeNull();
+    expect(screen.getByText('PARTICIPANT')).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Your question' })).toBeTruthy();
+    expect(screen.queryByRole('textbox', { name: 'Your reply' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'End this live session?' })).toBeNull();
+  });
   it('uses the authenticated socket join without a second HTTP access request', () => {
     mount();
     expect(socket.emit.mock.calls.filter(call => call[0] === 'joinRoom')).toHaveLength(1);
     expect(http.get).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Close Room' })).toBeNull();
     act(() => handlers.roomInfo({ topic: 'Physics', status: 'active', canManage: true }));
-    joined();
+    joined(true);
     expect(screen.getByRole('button', { name: 'Close Room' })).toBeTruthy();
     expect(socket.emit.mock.calls.filter(call => call[0] === 'joinRoom')).toHaveLength(1);
   });
@@ -70,6 +140,7 @@ describe('room confirmation and recovery', () => {
     act(() => handlers.disconnect('io server disconnect'));
     expect(screen.queryByRole('button', { name: 'Close Room' })).toBeNull();
     expect(screen.queryByText('Private room question')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Your question' })).toBeNull();
   });
   it('does not erase a second draft when an earlier submission finishes', () => {
     mount(); joined();
@@ -97,6 +168,7 @@ describe('room confirmation and recovery', () => {
   });
   it('submits with Ctrl+Enter only after joining and prevents a second in-flight request', () => {
     mount();
+    act(() => handlers.roomInfo({ canManage: false, status: 'active' }));
     const input = screen.getByRole('textbox', { name: 'Your question' });
     fireEvent.change(input, { target: { value: 'Keyboard question' } });
     fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
@@ -152,6 +224,7 @@ describe('room confirmation and recovery', () => {
       handlers.upvoteDoubt({ doubtId: 'snapshot', upvotes: 8, revision: 8 });
       handlers.existingDoubts([{ id: 'snapshot', text: 'Snapshot question', upvotes: 1, upvotedBy: [], revision: 1 }], null);
     });
+    joined();
     expect(screen.getByText('Live question')).toBeTruthy();
     expect(screen.getByText('8 upvotes')).toBeTruthy();
     expect(screen.queryByText('1 upvotes')).toBeNull();
@@ -220,6 +293,7 @@ describe('room confirmation and recovery', () => {
   });
   it('keeps submission disabled until the server confirms room access', () => {
     mount();
+    act(() => handlers.roomInfo({ canManage: false, status: 'active' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Your question' }), { target: { value: 'How does this work?' } });
     expect(screen.getByRole('button', { name: 'Submit Doubt' }).disabled).toBe(true);
     joined();
@@ -280,6 +354,7 @@ describe('room confirmation and recovery', () => {
     mount();
     const oldJoin = socket.emit.mock.calls.find(call => call[0] === 'joinRoom');
     act(() => { handlers.disconnect('transport close'); handlers.connect(); });
+    act(() => handlers.roomInfo({ canManage: false, status: 'active' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Your question' }), { target: { value: 'Wait for current access' } });
     act(() => oldJoin.at(-1)(null, { ok: true }));
     expect(screen.getByRole('button', { name: 'Submit Doubt' }).disabled).toBe(true);

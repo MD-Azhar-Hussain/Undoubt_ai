@@ -29,8 +29,8 @@ const RoomSession = ({ roomId, user }) => {
   const navigate = useNavigate();
   // The authenticated socket join supplies permissions and data together.
   // Neither the URL nor a caller-provided role grants host controls.
-  const [canManage, setCanManage] = useState(false);
-  const role = canManage ? 'host' : 'participant';
+  const [canManage, setCanManage] = useState(null);
+  const role = canManage === null ? null : canManage ? 'host' : 'participant';
   const draft = useQuestionDraft(user.id, roomId);
   const newDoubt = draft.text;
   const setNewDoubt = draft.setText;
@@ -94,7 +94,8 @@ const RoomSession = ({ roomId, user }) => {
       pendingSnapshotUpdates = [];
       questionsDuringJoin = new Set();
       setConnected(false);
-      setCanManage(false);
+      // Keep the last verified layout during a transient reconnect. Actions
+      // stay disabled until this join succeeds; unknown access stays neutral.
       setConnectionState('connecting');
       socket.timeout(10000).emit('joinRoom', roomId, (error, result) => {
         if (disposed || attempt !== joinAttempt) return;
@@ -104,7 +105,7 @@ const RoomSession = ({ roomId, user }) => {
         setConnectionState(result?.ok ? 'connected' : 'disconnected');
         if (!result?.ok && [401, 403, 404].includes(result?.status)) {
           setDoubts([]);
-          setCanManage(false);
+          setCanManage(null);
           navigate(result.status === 401 ? '/login' : '/access-denied', { replace: true });
           return;
         }
@@ -120,8 +121,7 @@ const RoomSession = ({ roomId, user }) => {
       joining = false;
       joinAttempt++;
       setConnected(false);
-      setCanManage(false);
-      if (reason === 'io server disconnect') setDoubts([]);
+      if (reason === 'io server disconnect') { setCanManage(null); setDoubts([]); }
       setConnectionState('disconnected');
     };
     const failure = error => toast.error(error.message, { toastId: `room-error-${error.message}` });
@@ -149,7 +149,8 @@ const RoomSession = ({ roomId, user }) => {
     });
 
     socket.on('roomInfo', (info) => {
-      setCanManage(info?.canManage === true);
+      setCanManage(typeof info?.canManage === 'boolean' ? info.canManage : null);
+      if (info?.canManage !== true) setConfirmClose(false);
       setIsRoomClosed(info?.status === 'closed');
       setRoomClosureMessage(info?.status === 'closed' ? 'This session has ended. You can revisit questions and host replies here.' : '');
       if (info && typeof info.topic === 'string') {
@@ -463,6 +464,20 @@ const RoomSession = ({ roomId, user }) => {
   }, [doubts, onlyMine, search, votePreviews, sortOrder]);
   const similarDoubt = useMemo(() => deferredDraft.trim().length < 3 ? undefined : doubts.find(doubt =>
     typeof doubt.text === 'string' && stringSimilarity.compareTwoStrings(deferredDraft, doubt.text) > 0.7), [deferredDraft, doubts]);
+
+  if (role === null) return (
+    <main className="access-screen">
+      <section className="access-card" aria-busy={connectionState === 'connecting'}>
+        <span className="eyebrow">Room {roomId}</span>
+        <h1>{connectionState === 'disconnected' ? 'Unable to open your room' : 'Opening your room…'}</h1>
+        <p role="status">{connectionState === 'disconnected'
+          ? 'Your draft is kept. Reconnect to try again.'
+          : 'Preparing your session and checking your access.'}</p>
+        {connectionState === 'disconnected' && <button onClick={() => { setConnectionState('connecting'); socket.disconnect(); socket.connect(); }}>Reconnect</button>}
+        <button onClick={handleLeaveRoom}>Back to sessions</button>
+      </section>
+    </main>
+  );
 
   return (
     <div className="room-screen min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 text-white">
