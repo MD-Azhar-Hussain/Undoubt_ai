@@ -4,3 +4,16 @@ node_modules
 *.log
 test
 *service-account*.json
+*firebase-adminsdk*.json
+coverage
+.git
+.vercel
+.railway
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.md
+scripts/benchmark.js
+scripts/check-realtime.js

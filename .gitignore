@@ -12,3 +12,22 @@ docs
 !/deploy/nginx/
 !/deploy/undoubt.service
 INTERVIEW_GUIDE.md
+
+# Local tooling, generated reports and deployment account metadata
+.vercel/
+.railway/
+.vite/
+.cache/
+playwright-report/
+test-results/
+*.tsbuildinfo
+*.heapsnapshot
+*.cpuprofile
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*firebase-adminsdk*.json
+Thumbs.db
+.DS_Store

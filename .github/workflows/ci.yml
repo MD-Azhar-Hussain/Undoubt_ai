@@ -1,35 +1,31 @@
-name: Verify
-on: [push, pull_request]
+name: Verify backend
+on:
+  push:
+    paths: ['backend/**', 'deploy/nginx/**', 'railway.json', '.github/workflows/ci.yml']
+  pull_request:
+    paths: ['backend/**', 'deploy/nginx/**', 'railway.json', '.github/workflows/ci.yml']
+permissions:
+  contents: read
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  checks:
+  backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            backend/package-lock.json
-            frontend/package-lock.json
+          cache-dependency-path: backend/package-lock.json
       - run: npm ci
-        working-directory: backend
-      - run: npm test
         working-directory: backend
       - name: Install Nginx for proxy integration checks
         run: sudo apt-get update && sudo apt-get install -y nginx
-      - name: Verify live events through real Nginx
-        run: NGINX_BIN="$(command -v nginx)" node --test test/nginx.test.js
+      - name: Test backend including real proxy delivery
+        run: NGINX_BIN="$(command -v nginx)" npm test
         working-directory: backend
       - run: npm audit --omit=dev --audit-level=high
         working-directory: backend
-      - run: npm ci
-        working-directory: frontend
-      - run: npm run lint
-        working-directory: frontend
-      - run: npm test
-        working-directory: frontend
-      - run: npm run build
-        working-directory: frontend
-      - run: npm audit --omit=dev --audit-level=high
-        working-directory: frontend

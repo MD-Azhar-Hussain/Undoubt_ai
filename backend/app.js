@@ -11,11 +11,13 @@ const { createActionBudget } = require('./lib/actionBudget');
 const { createVoteBroadcasts } = require('./lib/voteBroadcasts');
 const { validateDeployment } = require('./lib/deployment');
 const { railwayRateKey } = require('./lib/networkRateKey');
+const { createReadinessProbe } = require('./lib/readiness');
 const { measure, httpPerformance, socketPerformance } = require('./lib/performance');
 function createServer({ verify = verifyToken, db = createDatabase() } = {}) {
   const access = require('./services/access')(db);
   const service = require('./services/rooms')(db);
   const consumeSocketAction = createActionBudget();
+  const readiness = createReadinessProbe(() => db.ready());
   const app = express();
   app.disable('x-powered-by');
   if (process.env.TRUST_PROXY_HOPS) app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS));
@@ -27,8 +29,9 @@ function createServer({ verify = verifyToken, db = createDatabase() } = {}) {
   app.use(httpPerformance, helmet(), cors(corsOptions), express.json({ limit: '16kb' }));
   app.get('/health/live', (req, res) => res.json({ status: 'ok' }));
   app.get('/health/ready', async (req, res) => {
-    try { await db.ready(); res.json({ ready: true }); }
-    catch { res.status(503).json({ ready: false }); }
+    res.set('Cache-Control', 'no-store');
+    const ready = await readiness();
+    res.status(ready ? 200 : 503).json({ ready });
   });
   // Broad network guard plus a separate verified-user budget: campus Wi-Fi users
   // must not consume one another's normal allowance.
@@ -78,7 +81,6 @@ async function start() {
     try { await db.ready(); } catch { await db.close(); throw new Error('Supabase connection/schema check failed. Check settings and run npm run db:migrate.'); }
   } else console.log('Development setup mode: waiting for SUPABASE_DB_URL and FIREBASE_PROJECT_ID. Data routes return 503.');
   const { server, io } = createServer({ db });
-  //It was 6108 port number for Local testing 
   server.listen(process.env.PORT || 8080, process.env.HOST || '0.0.0.0', () => console.log(`Undoubt API listening on ${process.env.PORT || 8080}${configured ? '' : ' (setup incomplete)'}`));
   let stopping = false;
   const shutdown = () => {

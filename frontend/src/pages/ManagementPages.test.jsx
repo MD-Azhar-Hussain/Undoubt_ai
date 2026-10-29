@@ -7,7 +7,8 @@ const { authState, http } = vi.hoisted(() => ({
 }));
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => authState }));
 vi.mock('../utils/http', () => ({ default: http }));
-import { AdminPage, OrganisationPage } from './ManagementPages';
+import AdminPage from './AdminPage';
+import OrganisationPage from './OrganisationPage';
 import CreateRoomPage from './CreateRoomPage';
 import OrganisationSettings from '../components/management/OrganisationSettings';
 const id = 'd7df3a95-d423-412f-ae49-47184b498e44';

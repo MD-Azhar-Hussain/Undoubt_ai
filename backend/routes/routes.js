@@ -13,11 +13,6 @@ module.exports = function routes(io, service) {
   router.get('/rooms/:roomId/report', asyncRoute(async (req, res) => {
     res.json(await service.report(req.params.roomId, req.user, req.query.before));
   }));
-  router.post('/doubts', asyncRoute(async (req, res) => {
-    const doubt = await service.addDoubt(req.body.roomId, req.body, req.user);
-    await service.broadcastDoubt(io, req.body.roomId, doubt);
-    res.status(201).json(service.serializeDoubt(doubt, req.user, false));
-  }));
   router.get('/rooms/:roomId/host/:userId', asyncRoute(async (req, res) => {
     const room = await service.accessibleRoom(req.params.roomId, req.user);
     res.json({ isHost: room.canManage, room: service.serializeRoom(room) });

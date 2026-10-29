@@ -46,6 +46,7 @@ test('HTTP rejects missing credentials and derives room ownership from verified 
   const own = await api('get', `/api/rooms/${id}/host/other`).expect(200);
   assert.equal(own.body.isHost, true);
   await api('get', '/api/doubts').expect(404);
+  await api('post', '/api/doubts').send({ roomId: id, text: 'Retired endpoint' }).expect(404);
 });
 test('socket permissions, sanitized questions, atomic votes, privacy, closure and pagination', async () => {
   const a = (await api('post', '/api/rooms').send({ topic: 'A' }).expect(201)).body.room.roomId;

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "watchPatterns": [
+      "/railway.json",
+      "/backend/app.js",
+      "/backend/package.json",
+      "/backend/package-lock.json",
+      "/backend/Dockerfile",
+      "/backend/.dockerignore",
+      "/backend/controllers/**",
+      "/backend/db/**",
+      "/backend/lib/**",
+      "/backend/routes/**",
+      "/backend/services/**",
+      "/backend/scripts/grant-admin.js"
+    ]
+  }
+}

@@ -94,6 +94,16 @@ This release supports one backend process. Multiple replicas or PM2 cluster work
 - Retain the last working deployment and its configuration. Roll back application releases through the hosting dashboard; review schema compatibility first. Do not undo database migrations by deleting production tables.
 - Do not upload `.env`, private credential files, `node_modules`, or local `dist` output to Git. The hosts install dependencies and build from the lockfiles.
 
+### Avoiding unnecessary hosting work
+
+- Railway: keep Root Directory `/backend` and select **Config File `/railway.json`**. The tracked configuration watches only backend runtime/build files; frontend-only, documentation and test changes do not need a backend deployment. Confirm the configuration source in Railway Settings; a custom existing config path must be updated to use this file. No replica, region, billing or secret settings are changed by this file. [Railway watch paths](https://docs.railway.com/builds/build-configuration)
+- Vercel: the tracked `ignoreCommand` compares frontend deployment inputs against the **last successful deployment** using `VERCEL_GIT_PREVIOUS_SHA`. Backend-only and preview/test/documentation changes are skipped. Missing history, first deployments and same-commit redeploys build normally. For configuration changes or an intentional rebuild, redeploy the same commit or temporarily set `FORCE_FRONTEND_BUILD=true`. Keep system environment variables exposed to the build. A skipped deployment may still incur platform queue/check overhead; it avoids the dependency installation and Vite build. [Vercel build configuration](https://vercel.com/docs/project-configuration/vercel-json#ignorecommand)
+- GitHub CI: backend and frontend checks run only for their own changed paths; superseded runs are cancelled. Tests remain in Git, not in the production backend image.
+- Backend image: explicitly copies only runtime folders, migration files and the administrator CLI. Benchmarks, proxy probes, tests, local credentials and reports stay outside the image.
+- Supabase: public readiness probes share one in-flight database check. Successful results are reused for at most 5 seconds and failures for 1 second. This bounds health-query traffic; a database outage can take up to 5 seconds to appear in readiness. `/health/live` never touches the database. User/organisation authorization is not cached by this mechanism.
+- `POST /api/doubts` was a retired HTTP submission route with no frontend callers; it now returns 404. Supported question creation uses the authenticated `newDoubt` socket event. Report access routes and retained session data are preserved.
+- Keep `PERFORMANCE_LOGS` unset or `false` during ordinary operation; enable temporarily for diagnosis. Do not run migrations or load tests on every startup. Nothing in this cleanup deletes stored sessions or changes cloud plans.
+
 ## 7. Diagnosing latency
 
 Live room pages now obtain permissions from the authenticated socket join along with room data. They no longer perform a separate HTTP host check before opening the socket. Host controls start hidden, appear only after the server confirms `canManage`, and disappear on disconnect. Admin/organisation/report pages retain their separate access gates. Both old `/host/:id` and `/room/:id` links remain supported; the URL does not grant a role.

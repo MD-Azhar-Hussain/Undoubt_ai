@@ -2,6 +2,7 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
+  "ignoreCommand": "node scripts/ignore-build.mjs",
   "rewrites": [
     {
       "source": "/(.*)",
